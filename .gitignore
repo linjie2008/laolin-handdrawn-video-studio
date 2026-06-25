@@ -3,6 +3,9 @@ __pycache__/
 .env
 .venv/
 .venv-lineart/
+build/
+dist/
+*.egg-info/
 work/
 out/
 output/
