@@ -40,14 +40,16 @@ class ExternalCommandLineArt(LineArtProvider):
     def extract(self, color_png: Path, out_png: Path) -> Path:
         out_png.parent.mkdir(parents=True, exist_ok=True)
         if "{input}" in self.command or "{output}" in self.command:
-            command = self.command.format(input=str(color_png), output=str(out_png))
-            args = shlex.split(command)
+            args = [
+                arg.replace("{input}", str(color_png)).replace("{output}", str(out_png))
+                for arg in shlex.split(self.command)
+            ]
         else:
             args = [*shlex.split(self.command), str(color_png), str(out_png)]
         subprocess.run(args, check=True)
         if not out_png.exists():
             raise RuntimeError(f"{self.name} did not create output: {out_png}")
-        _clean_canvas_edges(out_png)
+        _postprocess_extracted_lineart(out_png, self.name)
         return out_png
 
 
@@ -199,15 +201,120 @@ def _anime2sketch_weights_ready(wrapper: Path) -> bool:
     return (weights / "netG.pth").exists() or (weights / "improved.bin").exists()
 
 
-def _clean_canvas_edges(image_path: Path, threshold: int = 250) -> None:
+def _postprocess_extracted_lineart(image_path: Path, provider_name: str) -> None:
+    """Convert neural pencil output into cleaner whiteboard line art.
+
+    Anime2Sketch often emits many very light gray pencil fragments. Those are
+    useful for still sketches, but they become noisy short strokes after
+    skeleton tracing. The default cleanup keeps darker semantic contours,
+    removes tiny isolated components, and writes pure black-on-white output.
+    """
+
+    params = _lineart_cleanup_params(provider_name)
+    if params is None:
+        _clean_canvas_edges(image_path)
+        return
+
+    image = Image.open(image_path).convert("L")
+    gray = np.asarray(image, dtype=np.uint8)
+    mask = gray < int(params["threshold"])
+    mask = _suppress_canvas_border_mask(mask)
+    mask = _remove_small_ink_components(
+        mask,
+        min_area=max(10, int(round(min(mask.shape) * float(params["min_area_ratio"])))),
+        min_span=max(8, int(round(min(mask.shape) * float(params["min_span_ratio"])))),
+    )
+    dilation = int(params["dilation"])
+    if dilation > 0:
+        mask = _binary_dilate(mask, iterations=dilation)
+        mask = _suppress_canvas_border_mask(mask)
+    final = np.where(mask, 0, 255).astype(np.uint8)
+    Image.fromarray(final, mode="L").convert("RGB").save(image_path)
+
+
+def _lineart_cleanup_params(provider_name: str) -> dict[str, float | int] | None:
+    mode = os.getenv("WHITEBOARD_LINEART_CLEANUP", "auto").strip().lower()
+    if mode in {"0", "false", "off", "none", "raw"}:
+        return None
+
+    normalized = provider_name.lower()
+    presets: dict[str, dict[str, float | int]] = {
+        "soft": {"threshold": 235, "min_area_ratio": 0.007, "min_span_ratio": 0.006, "dilation": 0},
+        "balanced": {"threshold": 224, "min_area_ratio": 0.011, "min_span_ratio": 0.008, "dilation": 1},
+        "strong": {"threshold": 216, "min_area_ratio": 0.018, "min_span_ratio": 0.012, "dilation": 1},
+    }
+    if mode == "auto":
+        params = presets["balanced" if "anime2sketch" in normalized else "soft"].copy()
+    else:
+        if mode not in presets:
+            raise RuntimeError(f"Unknown WHITEBOARD_LINEART_CLEANUP mode: {mode}")
+        params = presets[mode].copy()
+
+    env_prefix = "WHITEBOARD_ANIME2SKETCH" if "anime2sketch" in normalized else "WHITEBOARD_LINEART"
+    params["threshold"] = int(os.getenv(f"{env_prefix}_CLEAN_THRESHOLD", str(params["threshold"])))
+    params["dilation"] = int(os.getenv(f"{env_prefix}_CLEAN_DILATION", str(params["dilation"])))
+    return params
+
+
+def _suppress_canvas_border_mask(mask: np.ndarray) -> np.ndarray:
     from ..preprocess import suppress_canvas_border
 
+    return suppress_canvas_border(mask)
+
+
+def _clean_canvas_edges(image_path: Path, threshold: int = 250) -> None:
     image = Image.open(image_path).convert("RGB")
     gray = np.asarray(image.convert("L"), dtype=np.uint8)
     ink = gray < threshold
-    cleaned = suppress_canvas_border(ink)
+    cleaned = _suppress_canvas_border_mask(ink)
     if np.array_equal(ink, cleaned):
         return
     arr = np.asarray(image, dtype=np.uint8).copy()
     arr[ink & ~cleaned] = 255
     Image.fromarray(arr, mode="RGB").save(image_path)
+
+
+def _binary_dilate(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+    result = mask.astype(bool)
+    for _ in range(max(0, iterations)):
+        padded = np.pad(result, 1, mode="constant", constant_values=False)
+        result = np.zeros_like(result, dtype=bool)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                result |= padded[y_offset : y_offset + mask.shape[0], x_offset : x_offset + mask.shape[1]]
+    return result
+
+
+def _remove_small_ink_components(mask: np.ndarray, min_area: int, min_span: int) -> np.ndarray:
+    if not np.any(mask):
+        return mask
+    height, width = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    keep = np.zeros_like(mask, dtype=bool)
+    ys, xs = np.nonzero(mask)
+    for start_y, start_x in zip(ys.tolist(), xs.tolist()):
+        if visited[start_y, start_x]:
+            continue
+        stack = [(start_x, start_y)]
+        visited[start_y, start_x] = True
+        coords: list[tuple[int, int]] = []
+        min_x = max_x = start_x
+        min_y = max_y = start_y
+        while stack:
+            x, y = stack.pop()
+            coords.append((x, y))
+            min_x, max_x = min(min_x, x), max(max_x, x)
+            min_y, max_y = min(min_y, y), max(max_y, y)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < width and 0 <= ny < height and mask[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((nx, ny))
+        span = max(max_x - min_x + 1, max_y - min_y + 1)
+        if len(coords) >= min_area or span >= min_span:
+            for x, y in coords:
+                keep[y, x] = True
+    return keep

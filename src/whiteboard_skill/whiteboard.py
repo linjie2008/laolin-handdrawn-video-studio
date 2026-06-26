@@ -132,19 +132,66 @@ def _line_art_canvas(image_path: Path, resolution: tuple[int, int]) -> Image.Ima
 DEFAULT_LINE_ART_SNAP_THRESHOLD = 170
 
 
-def _complete_line_art_canvas(canvas: Image.Image, line_art: Image.Image | None, threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD) -> Image.Image:
+def _line_art_ink_mask(line_art: Image.Image, size: tuple[int, int], threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD) -> Image.Image:
+    source = line_art.convert("RGB")
+    if source.size != size:
+        source = source.resize(size, Image.Resampling.LANCZOS)
+    return source.convert("L").point(lambda px: 255 if px < threshold else 0)
+
+
+def _estimate_line_art_width(line_art: Image.Image | None, threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD) -> int:
+    """Estimate the visible line width of a raster line-art image."""
+
+    if line_art is None:
+        return 2
+    gray = np.asarray(line_art.convert("L"), dtype=np.uint8)
+    mask = gray < threshold
+    if not np.any(mask):
+        return 2
+    skel = zhang_suen_skeleton(mask)
+    skeleton_pixels = int(np.count_nonzero(skel))
+    if skeleton_pixels <= 0:
+        return 2
+    estimated = float(np.count_nonzero(mask)) / skeleton_pixels
+    return max(2, min(7, int(round(estimated))))
+
+
+def _combine_masks(a: Image.Image, b: Image.Image) -> Image.Image:
+    arr = np.minimum(np.asarray(a.convert("L"), dtype=np.uint8), np.asarray(b.convert("L"), dtype=np.uint8))
+    return Image.fromarray(arr, mode="L")
+
+
+def _complete_line_art_canvas(
+    canvas: Image.Image,
+    line_art: Image.Image | None,
+    threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD,
+    alpha: float = 1.0,
+) -> Image.Image:
     """Composite missing black line-art pixels over a redrawn stroke canvas."""
 
     if line_art is None:
         return canvas.copy()
     base = canvas.convert("RGB")
-    source = line_art.convert("RGB")
-    if source.size != base.size:
-        source = source.resize(base.size, Image.Resampling.LANCZOS)
-    gray = source.convert("L")
-    ink_mask = gray.point(lambda px: 255 if px < threshold else 0)
+    ink_mask = _line_art_ink_mask(line_art, base.size, threshold=threshold)
+    if alpha < 1.0:
+        ink_mask = ink_mask.point(lambda px: int(px * max(0.0, min(1.0, alpha))))
     black = Image.new("RGB", base.size, (18, 18, 18))
     base.paste(black, mask=ink_mask)
+    return base
+
+
+def _reveal_line_art_canvas(
+    canvas: Image.Image,
+    line_art: Image.Image | None,
+    reveal_mask: Image.Image | None,
+    threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD,
+) -> Image.Image:
+    if line_art is None or reveal_mask is None:
+        return canvas.copy()
+    base = canvas.convert("RGB")
+    ink_mask = _line_art_ink_mask(line_art, base.size, threshold=threshold)
+    black = Image.new("RGB", base.size, (18, 18, 18))
+    base.paste(black, mask=_combine_masks(ink_mask, reveal_mask))
     return base
 
 
@@ -367,6 +414,22 @@ def _draw_stroke_segment(
         return
     scaled = [(x * scale, y * scale) for x, y in points] if scale != 1 else points
     draw.line(scaled, fill=color, width=width, joint="curve")
+    radius = max(1, width // 2)
+    for x, y in (scaled[0], scaled[-1]):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+
+
+def _draw_reveal_mask_segment(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    width: int,
+) -> None:
+    if len(points) < 2:
+        return
+    draw.line(points, fill=255, width=width, joint="curve")
+    radius = max(1, width // 2)
+    for x, y in (points[0], points[-1]):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
 
 
 def _present_canvas(canvas: Image.Image, resolution: tuple[int, int]) -> Image.Image:
@@ -564,12 +627,17 @@ def render_scene(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     source = source_image.convert("RGB").resize(resolution) if source_image else load_on_canvas(image_path, resolution)
     aa_scale = 2 if max(resolution) <= 1280 else 1
+    effective_line_thickness = max(line_thickness, _estimate_line_art_width(complete_line_art, threshold=line_art_snap_threshold))
+    reveal_width = max(effective_line_thickness * 3 + 2, 9)
     canvas = Image.new("RGB", (resolution[0] * aa_scale, resolution[1] * aa_scale), "white")
     draw = ImageDraw.Draw(canvas)
+    reveal_mask = Image.new("L", resolution, 0) if complete_line_art is not None and line_art_snap else None
+    reveal_draw = ImageDraw.Draw(reveal_mask) if reveal_mask is not None else None
 
     total_frames = max(1, int(round(duration * fps)))
     fade_frames = max(0, min(total_frames - 1, int(round(tail_color_sec * fps))))
     draw_frames = max(1, total_frames - fade_frames)
+    completion_frames = min(max(6, int(round(fps * 0.45))), max(1, draw_frames // 5))
     timeline = _prepare_timeline(strokes, draw_frames)
     if not timeline:
         raise ValueError("No drawable stroke segments")
@@ -600,14 +668,20 @@ def render_scene(
                         pts = _stroke_segment_between(item.stroke.points, item.cumulative, previous, desired)
                         if len(pts) >= 2:
                             progress_ratio = desired / max(item.length, 1e-6)
-                            width = _line_width(line_thickness, progress_ratio, aa_scale)
+                            width = _line_width(effective_line_thickness, progress_ratio, aa_scale)
                             _draw_stroke_segment(draw, pts, item.stroke.color, width, aa_scale)
+                            if reveal_draw is not None:
+                                _draw_reveal_mask_segment(reveal_draw, pts, reveal_width)
                             cursor = pts[-1]
                             angle = _smooth_angle(angle_history, segment_angle(pts[-2], pts[-1]))
                         stroke_progress[stroke_index] = desired
                 frame = _present_canvas(canvas, resolution)
-                if line_art_snap and frame_index == draw_frames - 1:
-                    frame = _complete_line_art_canvas(frame, complete_line_art, threshold=line_art_snap_threshold)
+                frame = _reveal_line_art_canvas(frame, complete_line_art, reveal_mask, threshold=line_art_snap_threshold)
+                if line_art_snap:
+                    completion_start = max(0, draw_frames - completion_frames)
+                    if frame_index >= completion_start:
+                        completion = (frame_index - completion_start + 1) / max(1, completion_frames)
+                        frame = _complete_line_art_canvas(frame, complete_line_art, threshold=line_art_snap_threshold, alpha=completion)
                 if show_cursor:
                     if hand_cursor is not None:
                         frame = _paste_hand_cursor(frame, cursor[0], cursor[1], hand_cursor)
@@ -616,6 +690,7 @@ def render_scene(
             else:
                 progress = (frame_index - draw_frames + 1) / max(1, fade_frames)
                 color_canvas = _present_canvas(canvas, resolution)
+                color_canvas = _reveal_line_art_canvas(color_canvas, complete_line_art, reveal_mask, threshold=line_art_snap_threshold)
                 if line_art_snap:
                     color_canvas = _complete_line_art_canvas(color_canvas, complete_line_art, threshold=line_art_snap_threshold)
                 if color_fill_mode == "contour-wipe" and contour_fill_cache is None:

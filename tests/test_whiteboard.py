@@ -3,7 +3,17 @@ from pathlib import Path
 
 from PIL import Image
 
-from whiteboard_skill.whiteboard import _color_fill_frame, _complete_line_art_canvas, _load_source_image_canvas, _prepare_timeline, _stroke_segment_between, _text_to_strokes, _top_down_block_fill
+from whiteboard_skill.whiteboard import (
+    _color_fill_frame,
+    _complete_line_art_canvas,
+    _estimate_line_art_width,
+    _load_source_image_canvas,
+    _prepare_timeline,
+    _reveal_line_art_canvas,
+    _stroke_segment_between,
+    _text_to_strokes,
+    _top_down_block_fill,
+)
 
 
 def test_prepare_timeline_keeps_stroke_intervals_ordered():
@@ -97,6 +107,17 @@ def test_complete_line_art_canvas_restores_missing_ink():
     assert completed.getpixel((10, 10)) == (18, 18, 18)
 
 
+def test_complete_line_art_canvas_can_blend_missing_ink():
+    canvas = Image.new("RGB", (20, 20), "white")
+    line_art = Image.new("RGB", (20, 20), "white")
+    line_art.putpixel((10, 10), (0, 0, 0))
+
+    completed = _complete_line_art_canvas(canvas, line_art, alpha=0.5)
+
+    assert completed.getpixel((10, 10))[0] > 18
+    assert completed.getpixel((10, 10))[0] < 255
+
+
 def test_complete_line_art_canvas_ignores_light_gray_noise_by_default():
     canvas = Image.new("RGB", (20, 20), "white")
     line_art = Image.new("RGB", (20, 20), "white")
@@ -105,6 +126,29 @@ def test_complete_line_art_canvas_ignores_light_gray_noise_by_default():
     completed = _complete_line_art_canvas(canvas, line_art)
 
     assert completed.getpixel((10, 10)) == (255, 255, 255)
+
+
+def test_reveal_line_art_canvas_uses_reveal_mask():
+    canvas = Image.new("RGB", (20, 20), "white")
+    line_art = Image.new("RGB", (20, 20), "white")
+    line_art.putpixel((5, 5), (0, 0, 0))
+    line_art.putpixel((15, 15), (0, 0, 0))
+    reveal = Image.new("L", (20, 20), 0)
+    reveal.putpixel((5, 5), 255)
+
+    frame = _reveal_line_art_canvas(canvas, line_art, reveal)
+
+    assert frame.getpixel((5, 5)) == (18, 18, 18)
+    assert frame.getpixel((15, 15)) == (255, 255, 255)
+
+
+def test_estimate_line_art_width_from_ink_area():
+    line_art = Image.new("RGB", (40, 40), "white")
+    for y in range(19, 22):
+        for x in range(5, 35):
+            line_art.putpixel((x, y), (0, 0, 0))
+
+    assert _estimate_line_art_width(line_art) >= 3
 
 
 def test_text_to_strokes_generates_drawable_paths():

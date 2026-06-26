@@ -27,13 +27,13 @@ STROKE_DETAIL_PRESETS = {
         "max_merge_strokes": 1000,
     },
     "rich": {
-        "threshold": 242,
+        "threshold": 235,
         "min_points": 4,
         "min_length": "rich",
         "smooth_spacing": "rich",
         "merge_gap": "rich",
         "merge": True,
-        "max_merge_strokes": 1800,
+        "max_merge_strokes": 3200,
     },
     "max": {
         "threshold": 248,
@@ -614,11 +614,11 @@ def _detail_preset(stroke_detail: str, canvas_size: tuple[int, int]) -> dict[str
     elif preset["smooth_spacing"] == "max":
         preset["smooth_spacing"] = max(1.2, min_side * 0.0019)
     if preset["merge_gap"] == "rich":
-        preset["merge_gap"] = max(6.0, min_side * 0.011)
+        preset["merge_gap"] = max(7.0, min_side * 0.014)
     elif preset["merge_gap"] == "max":
         preset["merge_gap"] = max(4.0, min_side * 0.0075)
     if preset["min_length"] == "rich":
-        preset["min_length"] = max(5.5, min_side * 0.0065)
+        preset["min_length"] = max(9.0, min_side * 0.0115)
     return preset
 
 
