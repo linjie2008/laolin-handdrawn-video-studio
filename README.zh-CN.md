@@ -1,60 +1,52 @@
-# Whiteboard Video Engine
+<p align="center">
+  <img src="docs/assets/hero.png" alt="白板手绘视频引擎" width="960">
+</p>
+
+# 白板手绘视频引擎
 
 [English](README.md)
 
-本项目是一个本地优先的白板手绘视频引擎，用于把 SVG、线稿 PNG、插画或照片转换成逐笔绘制的 MP4 视频。它负责真正的渲染、线稿提取、路径追踪、手势跟随和颜色填充；Codex Skill 是独立仓库，只作为调用入口。
+一个本地优先的白板手绘视频引擎，可将 SVG、线稿图、插画和照片转换为逐笔绘制的 MP4 视频。
 
-- Engine: <https://github.com/gnipbao/whiteboard-video-engine>
-- Codex Skill: <https://github.com/gnipbao/codex-whiteboard-video-skill>
-- Author: <https://github.com/gnipbao>
-- 个人介绍：<https://ycnj2htgnvdy.feishu.cn/wiki/DOYRws0FmizhDAkkKGicvlpzndh?from=from_copylink>
+本仓库专注于底层渲染能力：语义线稿输入、笔画追踪、路径排序、手势跟随和轮廓感上色。Codex Skill 独立维护在 [gnipbao/codex-whiteboard-video-skill](https://github.com/gnipbao/codex-whiteboard-video-skill)。
 
-## Demo
+## 核心能力
 
-GitHub README 对 `<video>` 内联视频支持不稳定，所以这里使用 GIF 预览，并保留完整 MP4 链接。
+- 支持 SVG 和栅格线稿逐笔绘制。
+- 支持本地神经网络线稿提取，适配照片、插画和动漫图。
+- 支持骨架追踪、路径平滑和短线合并。
+- 内置固定角度手势：`asian`、`black`、`children`、`white`。
+- 支持 `--draw-text` 将短标题转换为手写路径。
+- 支持基于原图的轮廓感上色。
+- CLI 优先，方便脚本化、自动化和 Codex 集成。
+
+## 效果演示
 
 <table>
   <tr>
     <td width="50%">
       <strong>输入图</strong><br>
-      <img src="examples/cases/sports-illustration-anime2sketch/input.jpg" alt="Sports illustration input" width="360">
+      <img src="examples/cases/sports-illustration-anime2sketch/input.jpg" alt="输入插画" width="360">
     </td>
     <td width="50%">
       <strong>输出预览</strong><br>
       <a href="examples/cases/sports-illustration-anime2sketch/output.mp4">
-        <img src="examples/cases/sports-illustration-anime2sketch/output-preview.gif" alt="Whiteboard animation output preview" width="360">
+        <img src="examples/cases/sports-illustration-anime2sketch/output-preview.gif" alt="白板动画预览" width="360">
       </a><br>
-      <a href="examples/cases/sports-illustration-anime2sketch/output.mp4">查看完整 MP4</a>
+      <a href="examples/cases/sports-illustration-anime2sketch/output.mp4">查看 MP4</a>
     </td>
   </tr>
 </table>
 
-案例文件：
-
-- `examples/cases/sports-illustration-anime2sketch/input.jpg`
-- `examples/cases/sports-illustration-anime2sketch/output-preview.gif`
-- `examples/cases/sports-illustration-anime2sketch/output.mp4`
-- `examples/cases/sports-illustration-anime2sketch/README.md`
-
-## 能做什么
-
-- 将 SVG 或线稿 PNG 渲染成逐笔绘制的白板视频。
-- 使用本地神经网络模型从上传图片中提取语义线稿。
-- 将 raster skeleton 拆成可绘制 stroke，并尽量合并短线为长线。
-- 支持 `asian`、`black`、`children`、`white` 四种内置手势 PNG。
-- 支持固定手势方向，只跟随笔尖平移，减少旋转抖动。
-- 支持 `--draw-text "短标题"`，把短文字转成手写路径。
-- 支持轮廓感上色，让颜色从线稿边界内逐步填充到原图效果。
+后续案例可继续放入 `examples/cases/<case-name>/`。
 
 ## 安装
-
-从 GitHub 安装：
 
 ```bash
 python3 -m pip install "git+https://github.com/gnipbao/whiteboard-video-engine.git"
 ```
 
-本地开发安装：
+本地开发：
 
 ```bash
 git clone https://github.com/gnipbao/whiteboard-video-engine.git
@@ -64,14 +56,7 @@ python3 -m venv .venv
 pip install -e ".[dev]"
 ```
 
-如果网络受限，先安装基础依赖，再关闭 build isolation：
-
-```bash
-pip install numpy Pillow pydantic
-pip install --no-build-isolation --no-deps -e .
-```
-
-检查运行环境：
+检查环境：
 
 ```bash
 whiteboard doctor
@@ -79,19 +64,7 @@ whiteboard doctor
 
 ## 快速开始
 
-渲染 SVG：
-
-```bash
-whiteboard render-image tests/fixtures/apple.svg \
-  -o out/apple.mp4 \
-  --duration 2 \
-  --fps 24 \
-  --width 640 \
-  --height 360 \
-  --hand asian
-```
-
-渲染上传图片：
+渲染照片或插画：
 
 ```bash
 whiteboard render-photo input.jpg \
@@ -104,11 +77,22 @@ whiteboard render-photo input.jpg \
   --color-fill contour-wipe
 ```
 
-复现 demo：
+渲染已有 SVG 或线稿图：
+
+```bash
+whiteboard render-image lineart.png \
+  -o out/whiteboard.mp4 \
+  --source-image input.jpg \
+  --source-fit exact \
+  --duration 15 \
+  --fps 30
+```
+
+复现内置案例：
 
 ```bash
 whiteboard render-photo examples/cases/sports-illustration-anime2sketch/input.jpg \
-  -o out/sports-illustration-anime2sketch-longmix-15s.mp4 \
+  -o out/sports-illustration-anime2sketch.mp4 \
   --duration 15 \
   --fps 30 \
   --lineart-provider anime2sketch \
@@ -118,32 +102,12 @@ whiteboard render-photo examples/cases/sports-illustration-anime2sketch/input.jp
   --color-fill contour-wipe
 ```
 
-如果没有安装 console script，也可以直接调用模块：
-
-```bash
-PYTHONPATH=src python3 -m whiteboard_skill.cli render-image tests/fixtures/apple.svg \
-  -o out/apple.mp4 \
-  --duration 2 \
-  --hand asian
-```
-
-## 本地线稿模型
-
-模型代码和权重不提交到本仓库。用户需要按照上游项目说明自行下载。
-
-支持：
-
-- Informative Drawings：更适合真实照片和语义线稿。
-- Anime2Sketch：更适合动漫、漫画、插画和白底干净图片。
-
-详见 [docs/MODELS.md](docs/MODELS.md)。
-
-## CLI 概览
+## 命令行
 
 ```bash
 whiteboard extract-lineart image.jpg -o lineart.png --provider auto
 whiteboard render-photo image.jpg -o output.mp4 --duration 15 --lineart-provider auto
-whiteboard render-image lineart.png -o output.mp4 --source-image image.jpg --size-from-image
+whiteboard render-image lineart.png -o output.mp4 --source-image image.jpg --source-fit exact
 whiteboard analyze-image lineart.png -o analysis.json --stroke-detail rich
 whiteboard list-hands
 whiteboard doctor
@@ -153,43 +117,44 @@ whiteboard doctor
 
 - `--stroke-detail balanced|rich|max`
 - `--hand asian|black|children|white|procedural|none`
-- `--draw-text "Title"`
+- `--draw-text "标题"`
 - `--color-fill contour-wipe|brush-scan|top-down-blocks|fade`
-- `--lineart-snap-threshold 170`
-- `--no-lineart-snap`
+- `--lineart-provider auto|informative|anime2sketch`
 
-## 技术栈
+## 线稿模型
+
+本仓库不提交模型仓库和模型权重。用户需要本地安装模型，并将 wrapper 放在 `tools/lineart/` 下。
+
+支持的线稿模型：
+
+- [Informative Drawings](https://github.com/carolineec/informative-drawings)：适合照片和语义线稿。
+- [Anime2Sketch](https://github.com/Mukosame/Anime2Sketch)：适合动漫、漫画和白底插画。
+
+模型路径、环境变量和 wrapper 命令见 [docs/MODELS.md](docs/MODELS.md)。
+
+## 架构
+
+```text
+原图 / SVG
+  -> 本地线稿模型
+  -> 骨架提取 / SVG 路径解析
+  -> 笔画排序与路径平滑
+  -> 手势跟随渲染
+  -> 轮廓感上色
+  -> FFmpeg 输出 MP4
+```
 
 核心依赖：
 
-- Python
-- Pillow
-- NumPy
-- Pydantic
+- Python、Pillow、NumPy、Pydantic
 - FFmpeg
+- 可选 PyTorch 线稿模型栈
 
-渲染算法：
+架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
-- Zhang-Suen skeletonization
-- 8-neighbor stroke tracing
-- endpoint-based stroke merging
-- long / medium / short stroke mix
-- fixed-orientation PNG hand cursor
-- contour-aware color fill
+## Codex Skill
 
-可选模型推理：
-
-- PyTorch
-- torchvision
-- Informative Drawings
-- Anime2Sketch
-- optional VTracer CLI
-
-架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-
-## Codex Skill 集成
-
-先安装引擎，再安装 Skill：
+安装引擎后，可继续安装配套 Skill：
 
 ```bash
 mkdir -p ~/.codex/skills
@@ -197,21 +162,30 @@ git clone https://github.com/gnipbao/codex-whiteboard-video-skill.git \
   ~/.codex/skills/whiteboard-video
 ```
 
-Skill 仓库不会 vendor `src/whiteboard_skill`，只通过 wrapper 调用已安装的 engine package。
+Skill 仓库只包含 Codex 指令和 wrapper 脚本，渲染能力以本仓库为准。
 
-## 版本管理规则
+## 案例库
 
-不要提交：
+| 案例 | 线稿模型 | 说明 |
+| --- | --- | --- |
+| `sports-illustration-anime2sketch` | Anime2Sketch | 白底插画、丰富笔画、轮廓感上色 |
 
-- 大量生成视频、临时输出、`out/`、`work/`
-- `.venv/`、`.venv-lineart/`
-- `tools/informative-drawings/`
-- `tools/Anime2Sketch/`
-- `*.pth`、`*.pt`、`*.ckpt`、`*.safetensors`、`*.onnx`、`*.bin`
-- 未授权用户上传素材
+新增案例建议使用：
 
-少量 curated example 可放在 `examples/cases/`，用于公开演示。
+```text
+examples/cases/<case-name>/
+  README.md
+  input.jpg
+  output-preview.gif
+  output.mp4
+```
 
-## License
+## 仓库边界
 
-MIT. 上游模型项目和权重请分别查看各自许可证。
+不要提交模型仓库、模型权重、虚拟环境、生成过程目录，或没有分发授权的用户上传素材。
+
+少量精选演示素材可放在 `examples/cases/`。
+
+## 许可证
+
+MIT。上游模型代码和权重遵循各自许可证。
