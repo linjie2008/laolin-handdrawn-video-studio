@@ -103,12 +103,7 @@ PYTHONPATH=src python3 -m whiteboard_skill.cli render-image tests/fixtures/apple
     </td>
     <td width="50%">
       <strong>输出视频 / Output</strong><br>
-      
-
-https://github.com/user-attachments/assets/d641bf39-9dda-4644-99bf-98d482468814
-
-
-      <a href="examples/cases/sports-illustration-anime2sketch/output.mp4">Open output video</a>
+      <video src="https://github.com/user-attachments/assets/d641bf39-9dda-4644-99bf-98d482468814" controls width="360"></video>
     </td>
   </tr>
 </table>
