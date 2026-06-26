@@ -146,6 +146,24 @@ def test_reveal_line_art_canvas_uses_reveal_mask():
     assert frame.getpixel((15, 15)) == (255, 255, 255)
 
 
+def test_line_art_canvas_accepts_precomputed_ink_mask():
+    canvas = Image.new("RGB", (20, 20), "white")
+    line_art = Image.new("RGB", (20, 20), "white")
+    line_art.putpixel((5, 5), (0, 0, 0))
+    line_art.putpixel((8, 8), (0, 0, 0))
+    reveal = Image.new("L", (20, 20), 0)
+    reveal.putpixel((5, 5), 255)
+    ink_mask = _line_art_ink_mask(line_art, (20, 20))
+
+    completed = _complete_line_art_canvas(canvas, line_art)
+    completed_cached = _complete_line_art_canvas(canvas, None, ink_mask=ink_mask)
+    revealed = _reveal_line_art_canvas(canvas, line_art, reveal)
+    revealed_cached = _reveal_line_art_canvas(canvas, None, reveal, ink_mask=ink_mask)
+
+    assert completed.tobytes() == completed_cached.tobytes()
+    assert revealed.tobytes() == revealed_cached.tobytes()
+
+
 def test_estimate_line_art_width_from_ink_area():
     line_art = Image.new("RGB", (40, 40), "white")
     for y in range(19, 22):

@@ -6,7 +6,6 @@ import math
 import bisect
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,18 +202,20 @@ def _complete_line_art_canvas(
     line_art: Image.Image | None,
     threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD,
     alpha: float = 1.0,
+    ink_mask: Image.Image | None = None,
 ) -> Image.Image:
     """Composite missing black line-art pixels over a redrawn stroke canvas."""
 
-    if line_art is None:
+    if line_art is None and ink_mask is None:
         return canvas.copy()
     base = canvas.convert("RGB")
-    ink_mask = _line_art_ink_mask(line_art, base.size, threshold=threshold)
-    if alpha < 1.0:
-        ink_mask = ink_mask.point(lambda px: int(px * max(0.0, min(1.0, alpha))))
-    ink_mask = ink_mask.point(lambda px: int(px * SKETCH_INK_OPACITY))
+    mask = ink_mask if ink_mask is not None else _line_art_ink_mask(line_art, base.size, threshold=threshold)
+    if mask.size != base.size:
+        mask = mask.resize(base.size, Image.Resampling.NEAREST)
+    opacity = SKETCH_INK_OPACITY * max(0.0, min(1.0, alpha))
+    mask = mask.point(lambda px: int(px * opacity))
     ink = Image.new("RGB", base.size, SKETCH_INK_COLOR)
-    base.paste(ink, mask=ink_mask)
+    base.paste(ink, mask=mask)
     return base
 
 
@@ -223,12 +224,15 @@ def _reveal_line_art_canvas(
     line_art: Image.Image | None,
     reveal_mask: Image.Image | None,
     threshold: int = DEFAULT_LINE_ART_SNAP_THRESHOLD,
+    ink_mask: Image.Image | None = None,
 ) -> Image.Image:
-    if line_art is None or reveal_mask is None:
+    if reveal_mask is None or (line_art is None and ink_mask is None):
         return canvas.copy()
     base = canvas.convert("RGB")
-    ink_mask = _line_art_ink_mask(line_art, base.size, threshold=threshold)
-    reveal = _combine_masks(ink_mask, reveal_mask).point(lambda px: int(px * SKETCH_INK_OPACITY))
+    mask = ink_mask if ink_mask is not None else _line_art_ink_mask(line_art, base.size, threshold=threshold)
+    if mask.size != base.size:
+        mask = mask.resize(base.size, Image.Resampling.NEAREST)
+    reveal = _combine_masks(mask, reveal_mask).point(lambda px: int(px * SKETCH_INK_OPACITY))
     ink = Image.new("RGB", base.size, SKETCH_INK_COLOR)
     base.paste(ink, mask=reveal)
     return base
@@ -477,6 +481,39 @@ def _present_canvas(canvas: Image.Image, resolution: tuple[int, int]) -> Image.I
     return canvas.resize(resolution, Image.Resampling.LANCZOS)
 
 
+def _open_ffmpeg_rawvideo_writer(out_path: Path, resolution: tuple[int, int], fps: int) -> tuple[subprocess.Popen[bytes], list[str]]:
+    width, height = resolution
+    command = [
+        _ffmpeg(),
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-framerate",
+        str(fps),
+        "-i",
+        "-",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(out_path),
+    ]
+    return subprocess.Popen(command, stdin=subprocess.PIPE), command
+
+
+def _write_ffmpeg_frame(process: subprocess.Popen[bytes], frame: Image.Image) -> None:
+    if process.stdin is None:
+        raise RuntimeError("ffmpeg stdin is not available")
+    payload = frame.tobytes() if frame.mode == "RGB" else frame.convert("RGB").tobytes()
+    process.stdin.write(payload)
+
+
 def _smooth_angle(history: list[float], angle: float, window: int = 5) -> float:
     history.append(angle)
     del history[:-window]
@@ -669,6 +706,11 @@ def render_scene(
     estimated_line_width = _estimate_line_art_width(complete_line_art, threshold=line_art_snap_threshold)
     effective_line_thickness = max(1, int(line_thickness))
     reveal_width = max(effective_line_thickness * 3 + 2, int(round(estimated_line_width * 2.2)), 8)
+    snap_ink_mask = (
+        _line_art_ink_mask(complete_line_art, resolution, threshold=line_art_snap_threshold)
+        if complete_line_art is not None and line_art_snap
+        else None
+    )
     canvas = Image.new("RGB", (resolution[0] * aa_scale, resolution[1] * aa_scale), "white")
     draw = ImageDraw.Draw(canvas)
     reveal_mask = Image.new("L", resolution, 0) if complete_line_art is not None and line_art_snap else None
@@ -688,10 +730,11 @@ def render_scene(
     angle_history: list[float] = []
     hand_cursor = None
     contour_fill_cache: ContourFillCache | None = None
+    color_base_canvas: Image.Image | None = None
     if show_cursor and str(hand_style) not in {"procedural", "none"}:
         hand_cursor = _load_hand_cursor(hand_style, resolution, hand_scale)
-    with tempfile.TemporaryDirectory(prefix="whiteboard-frames-") as tmp:
-        frames = Path(tmp)
+    process, ffmpeg_command = _open_ffmpeg_rawvideo_writer(out_path, resolution, fps)
+    try:
         for frame_index in range(total_frames):
             if frame_index < draw_frames:
                 target = total_units * ((frame_index + 1) / draw_frames)
@@ -716,12 +759,12 @@ def render_scene(
                             angle = _smooth_angle(angle_history, segment_angle(pts[-2], pts[-1]))
                         stroke_progress[stroke_index] = desired
                 frame = _present_canvas(canvas, resolution)
-                frame = _reveal_line_art_canvas(frame, complete_line_art, reveal_mask, threshold=line_art_snap_threshold)
+                frame = _reveal_line_art_canvas(frame, complete_line_art, reveal_mask, threshold=line_art_snap_threshold, ink_mask=snap_ink_mask)
                 if line_art_snap:
                     completion_start = max(0, draw_frames - completion_frames)
                     if frame_index >= completion_start:
                         completion = (frame_index - completion_start + 1) / max(1, completion_frames)
-                        frame = _complete_line_art_canvas(frame, complete_line_art, threshold=line_art_snap_threshold, alpha=completion)
+                        frame = _complete_line_art_canvas(frame, complete_line_art, threshold=line_art_snap_threshold, alpha=completion, ink_mask=snap_ink_mask)
                 if show_cursor:
                     if hand_cursor is not None:
                         frame = _paste_hand_cursor(frame, cursor[0], cursor[1], hand_cursor)
@@ -729,10 +772,23 @@ def render_scene(
                         _draw_cursor(frame, cursor[0], cursor[1], angle)
             else:
                 progress = (frame_index - draw_frames + 1) / max(1, fade_frames)
-                color_canvas = _present_canvas(canvas, resolution)
-                color_canvas = _reveal_line_art_canvas(color_canvas, complete_line_art, reveal_mask, threshold=line_art_snap_threshold)
-                if line_art_snap:
-                    color_canvas = _complete_line_art_canvas(color_canvas, complete_line_art, threshold=line_art_snap_threshold)
+                if color_base_canvas is None:
+                    color_base_canvas = _present_canvas(canvas, resolution)
+                    color_base_canvas = _reveal_line_art_canvas(
+                        color_base_canvas,
+                        complete_line_art,
+                        reveal_mask,
+                        threshold=line_art_snap_threshold,
+                        ink_mask=snap_ink_mask,
+                    )
+                    if line_art_snap:
+                        color_base_canvas = _complete_line_art_canvas(
+                            color_base_canvas,
+                            complete_line_art,
+                            threshold=line_art_snap_threshold,
+                            ink_mask=snap_ink_mask,
+                        )
+                color_canvas = color_base_canvas
                 if color_fill_mode == "contour-wipe" and contour_fill_cache is None:
                     contour_fill_cache = _prepare_contour_fill_cache(color_canvas)
                 frame, fill_cursor, fill_angle = _color_fill_frame(
@@ -748,11 +804,17 @@ def render_scene(
                         frame = _paste_hand_cursor(frame, fill_cursor[0], fill_cursor[1], hand_cursor)
                     elif hand_style != "none":
                         _draw_cursor(frame, fill_cursor[0], fill_cursor[1], fill_angle)
-            frame.save(frames / f"frame_{frame_index:05d}.png")
-        subprocess.run(
-            [_ffmpeg(), "-y", "-framerate", str(fps), "-i", str(frames / "frame_%05d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path)],
-            check=True,
-        )
+            _write_ffmpeg_frame(process, frame)
+    except Exception:
+        if process.stdin is not None:
+            process.stdin.close()
+        process.wait()
+        raise
+    if process.stdin is not None:
+        process.stdin.close()
+    return_code = process.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, ffmpeg_command)
 
 
 def render_image(
