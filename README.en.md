@@ -46,6 +46,43 @@ The engine focuses on the rendering layer: semantic line-art input, stroke traci
 
 More examples can be added under `examples/cases/<case-name>/`.
 
+### Photo And Nature Cases
+
+`examples/cases/nature/` shows complex photos, nature-like scenes, portraits, and sports images rendered with the Informative Drawings provider.
+
+<table>
+  <tr>
+    <td width="25%">
+      <strong>Pool</strong><br>
+      <img src="examples/cases/nature/pool.jpg" alt="Pool input" width="180"><br>
+      <a href="examples/cases/nature/pool.mp4">
+        <img src="examples/cases/nature/pool-preview.gif" alt="Pool whiteboard preview" width="180">
+      </a>
+    </td>
+    <td width="25%">
+      <strong>Interior</strong><br>
+      <img src="examples/cases/nature/cool.jpg" alt="Interior input" width="180"><br>
+      <a href="examples/cases/nature/cool.mp4">
+        <img src="examples/cases/nature/cool-preview.gif" alt="Interior whiteboard preview" width="180">
+      </a>
+    </td>
+    <td width="25%">
+      <strong>Portrait</strong><br>
+      <img src="examples/cases/nature/girl.jpg" alt="Portrait input" width="180"><br>
+      <a href="examples/cases/nature/girl.mp4">
+        <img src="examples/cases/nature/girl-preview.gif" alt="Portrait whiteboard preview" width="180">
+      </a>
+    </td>
+    <td width="25%">
+      <strong>Sports</strong><br>
+      <img src="examples/cases/nature/halande.jpg" alt="Sports input" width="180"><br>
+      <a href="examples/cases/nature/halande.mp4">
+        <img src="examples/cases/nature/halande-preview.gif" alt="Sports whiteboard preview" width="180">
+      </a>
+    </td>
+  </tr>
+</table>
+
 ## Installation
 
 ```bash
@@ -94,14 +131,14 @@ whiteboard render-image lineart.png \
   --fps 30
 ```
 
-Reproduce the included case:
+Reproduce the included nature case:
 
 ```bash
-whiteboard render-photo examples/cases/sports-illustration-anime2sketch/input.jpg \
-  -o out/sports-illustration-anime2sketch.mp4 \
+whiteboard render-photo examples/cases/nature/pool.jpg \
+  -o out/nature-pool.mp4 \
   --duration 15 \
   --fps 30 \
-  --lineart-provider anime2sketch \
+  --lineart-provider informative \
   --stroke-detail rich \
   --hand asian \
   --tail-color 4.5 \
@@ -222,6 +259,7 @@ The Skill repository only contains Codex instructions and a wrapper script. This
 | Case | Provider | Notes |
 | --- | --- | --- |
 | `sports-illustration-anime2sketch` | Anime2Sketch | White-background illustration, rich strokes, contour color fill |
+| `nature` | Informative Drawings | Photos, natural scenes, portraits, and sports images rendered as whiteboard videos |
 
 Future cases should follow:
 
