@@ -6,6 +6,9 @@
 
 [English](README.en.md)
 
+> 基于原作者 [@gnipbao](https://github.com/gnipbao) 的
+> [whiteboard-video-engine](https://github.com/gnipbao/whiteboard-video-engine) 持续开发，感谢原作者的开源工作。
+
 一个本地优先的白板手绘视频引擎，可将 SVG、线稿图、插画和照片转换为逐笔绘制的 MP4 视频。
 
 本仓库专注于底层渲染能力：语义线稿输入、笔画追踪、路径排序、手势跟随和轮廓感上色。Codex Skill 独立维护在 [gnipbao/codex-whiteboard-video-skill](https://github.com/gnipbao/codex-whiteboard-video-skill)。

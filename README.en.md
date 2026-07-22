@@ -6,6 +6,10 @@
 
 [中文](README.md)
 
+> Continued development based on the original
+> [whiteboard-video-engine](https://github.com/gnipbao/whiteboard-video-engine) by
+> [@gnipbao](https://github.com/gnipbao). Thanks to the original author for the open-source work.
+
 <p>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green">
