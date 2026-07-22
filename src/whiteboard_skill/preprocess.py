@@ -51,6 +51,11 @@ STROKE_DETAIL_PRESETS = {
 class Stroke:
     """A drawable stroke path.
 
+    ``widths`` is an optional per-point stroke diameter in canvas pixels.
+    When set, the renderer draws variable-width ink so thick doodle marks and
+    solid filled blocks reconstruct instead of collapsing into thin centerlines.
+    ``width`` is a scalar fallback used when every point shares one thickness.
+
     Example:
         >>> Stroke(points=[(0, 0), (1, 1)]).source
         'raster'
@@ -59,6 +64,24 @@ class Stroke:
     points: list[Point]
     color: tuple[int, int, int] = (64, 60, 62)
     source: str = "raster"
+    # Optional pen width in canvas pixels (uniform along the stroke).
+    width: float | None = None
+    # Optional per-point diameters (same length as points). Preferred over width.
+    widths: list[float] | None = None
+
+    def mean_width(self, default: float = 2.0) -> float:
+        if self.widths:
+            return float(sum(self.widths) / max(1, len(self.widths)))
+        if self.width is not None and self.width > 0:
+            return float(self.width)
+        return default
+
+    def max_width(self, default: float = 2.0) -> float:
+        if self.widths:
+            return float(max(self.widths))
+        if self.width is not None and self.width > 0:
+            return float(self.width)
+        return default
 
 
 def load_on_canvas(image_path: Path, canvas_size: tuple[int, int]) -> Image.Image:
@@ -230,6 +253,131 @@ def zhang_suen_skeleton(mask: np.ndarray, max_iterations: int = 160) -> np.ndarr
     return img[1:-1, 1:-1].astype(bool)
 
 
+def _dilate_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Binary dilate without wrap-around (unlike np.roll)."""
+
+    if radius <= 0 or mask.size == 0:
+        return mask.copy()
+    try:
+        import cv2
+
+        k = 2 * int(radius) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    except Exception:
+        h, w = mask.shape
+        padded = np.pad(mask, radius, mode="constant", constant_values=False)
+        out = np.zeros_like(mask, dtype=bool)
+        span = radius * 2 + 1
+        for dy in range(span):
+            for dx in range(span):
+                out |= padded[dy : dy + h, dx : dx + w]
+        return out
+
+
+def _erode_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Binary erode without wrap-around."""
+
+    if radius <= 0 or mask.size == 0:
+        return mask.copy()
+    try:
+        import cv2
+
+        k = 2 * int(radius) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.erode(mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    except Exception:
+        inverted = ~mask
+        grown = _dilate_mask(inverted, radius=radius)
+        return ~grown & mask
+
+
+def ink_radius_at(mask: np.ndarray, x: float, y: float, max_radius: int = 128) -> float:
+    """Chebyshev distance from a point to the nearest background pixel.
+
+    Used as local half-width for variable brush strokes. Skeleton points of a
+    solid disk of radius R report ~R, so a diameter of 2R reconstructs the fill.
+    """
+
+    h, w = mask.shape
+    cx = int(round(x))
+    cy = int(round(y))
+    if not (0 <= cx < w and 0 <= cy < h) or not mask[cy, cx]:
+        return 0.5
+    limit = max(1, min(int(max_radius), max(h, w)))
+    for radius in range(1, limit + 1):
+        y0, y1 = cy - radius, cy + radius
+        x0, x1 = cx - radius, cx + radius
+        if y0 < 0 or x0 < 0 or y1 >= h or x1 >= w:
+            return float(radius - 1) + 0.5
+        top = mask[y0, x0 : x1 + 1]
+        bottom = mask[y1, x0 : x1 + 1]
+        left = mask[y0 : y1 + 1, x0]
+        right = mask[y0 : y1 + 1, x1]
+        if not (bool(top.all()) and bool(bottom.all()) and bool(left.all()) and bool(right.all())):
+            return float(radius - 1) + 0.5
+    return float(limit)
+
+
+def _widths_for_path(path: np.ndarray | list[Point], mask: np.ndarray, min_width: float = 1.5) -> list[float]:
+    """Map path points to stroke diameters via 2 * local ink radius."""
+
+    widths: list[float] = []
+    for point in path:
+        x, y = float(point[0]), float(point[1])
+        width = max(min_width, min(240.0, ink_radius_at(mask, x, y) * 2.0))
+        widths.append(width)
+    return widths
+
+
+def _widths_for_path_from_dist(
+    path: np.ndarray | list[Point],
+    dist: np.ndarray,
+    min_width: float = 1.5,
+    max_width: float = 240.0,
+) -> list[float]:
+    """Fast per-point diameters from a precomputed Euclidean distance map."""
+
+    heights, width = dist.shape
+    widths: list[float] = []
+    for point in path:
+        xi, yi = int(round(float(point[0]))), int(round(float(point[1])))
+        if 0 <= xi < width and 0 <= yi < heights:
+            diameters = float(dist[yi, xi]) * 2.0
+            widths.append(max(min_width, min(max_width, diameters)))
+        else:
+            widths.append(min_width)
+    return widths
+
+
+def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    """4-connected component labels. Returns (labels, count). Background is 0."""
+
+    try:
+        import cv2
+
+        count, labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=4)
+        return labels.astype(np.int32), int(count) - 1
+    except Exception:
+        h, w = mask.shape
+        labels = np.zeros((h, w), dtype=np.int32)
+        count = 0
+        ys, xs = np.nonzero(mask)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            if labels[y, x]:
+                continue
+            count += 1
+            stack = [(x, y)]
+            labels[y, x] = count
+            while stack:
+                cx, cy = stack.pop()
+                for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                    if 0 <= nx < w and 0 <= ny < h and mask[ny, nx] and labels[ny, nx] == 0:
+                        labels[ny, nx] = count
+                        stack.append((nx, ny))
+        return labels, count
+
+
 def _skel_neighbors(skel: np.ndarray, point: tuple[int, int]) -> list[tuple[int, int]]:
     x, y = point
     h, w = skel.shape
@@ -306,6 +454,317 @@ def trace_8connected(skel: np.ndarray, min_points: int = 8) -> list[np.ndarray]:
             if len(path) >= min_points:
                 strokes.append(np.asarray(path, dtype=np.int32))
     return strokes
+
+
+def _freehand_fill_points(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    rng: np.random.Generator,
+    *,
+    wobble: float = 1.2,
+    sample_step: float = 4.5,
+) -> list[Point]:
+    """Polyline along a segment with casual hand wobble (not a ruler line)."""
+
+    length = math.hypot(x1 - x0, y1 - y0)
+    if length < 1.5:
+        return [(x0, y0), (x1, y1)]
+    n = max(2, int(round(length / max(2.0, sample_step))) + 1)
+    # Gentle low-frequency drift + high-frequency jitter so it feels scribbled.
+    phase = float(rng.uniform(0.0, math.tau))
+    freq = float(rng.uniform(0.7, 1.6))
+    amp = wobble * float(rng.uniform(0.55, 1.15))
+    # Slight arc bias (wrist sweep) instead of pure sine.
+    arc = float(rng.uniform(-0.35, 0.35)) * wobble
+    dx, dy = (x1 - x0) / length, (y1 - y0) / length
+    nx, ny = -dy, dx  # unit normal
+    points: list[Point] = []
+    for i in range(n + 1):
+        t = i / n
+        # Ease ends so endpoints stay closer to the ink run.
+        edge = math.sin(math.pi * t)
+        along = t * length
+        # Mild speed variation (hand pauses / rushes).
+        along += amp * 0.15 * math.sin(phase + t * math.pi * 2.0)
+        base_x = x0 + dx * (along if along <= length else length * t)
+        base_y = y0 + dy * (along if along <= length else length * t)
+        # Re-lerp for stability at ends.
+        base_x = x0 + (x1 - x0) * t
+        base_y = y0 + (y1 - y0) * t
+        wob = amp * edge * math.sin(phase + t * math.pi * 2.0 * freq)
+        wob += arc * edge * (4.0 * t * (1.0 - t))
+        wob += float(rng.normal(0.0, amp * 0.18)) * edge
+        points.append((base_x + nx * wob, base_y + ny * wob))
+    # Dedup near-duplicates.
+    cleaned: list[Point] = [points[0]]
+    for p in points[1:]:
+        if math.hypot(p[0] - cleaned[-1][0], p[1] - cleaned[-1][1]) > 0.35:
+            cleaned.append(p)
+    if len(cleaned) < 2:
+        return [(x0, y0), (x1, y1)]
+    return cleaned
+
+
+def _freehand_widths(
+    n: int,
+    base: float,
+    rng: np.random.Generator,
+    *,
+    max_brush: float = 9.0,
+) -> list[float]:
+    """Per-point pressure: thicker mid-stroke, lighter ends, small jitter."""
+
+    if n < 2:
+        return [max(1.4, min(max_brush, base))]
+    widths: list[float] = []
+    pulse = float(rng.uniform(0.0, math.pi))
+    for i in range(n):
+        t = i / max(1, n - 1)
+        # Calligraphic envelope: thin→fat→thin, a bit asymmetric.
+        env = 0.78 + 0.28 * math.sin(math.pi * t) + 0.06 * math.sin(pulse + t * math.pi * 3.0)
+        env *= float(rng.uniform(0.9, 1.1))
+        w = max(1.4, min(max_brush, base * env))
+        widths.append(w)
+    return widths
+
+
+def _freehand_scribble_strokes(
+    mask: np.ndarray,
+    dist: np.ndarray | None = None,
+    min_area: int = 12,
+    source: str = "ink-freehand",
+    color: tuple[int, int, int] = (52, 50, 52),
+    max_brush: float = 7.5,
+) -> list[Stroke]:
+    """Cover ink with continuous freehand pen strokes — no skeleton, no scan-brush.
+
+    Each stroke is a meandering path that stays inside the ink mass, turns casually,
+    and lifts when coverage is good enough. Looks like 随笔, not 刷子横扫 / 中心线骨架.
+    """
+
+    if not np.any(mask):
+        return []
+    if dist is None:
+        dist = _distance_transform(mask)
+
+    labels, count = _label_components(mask.astype(bool))
+    strokes: list[Stroke] = []
+    h, w = mask.shape
+    seed = int(mask.sum()) ^ (h * 10007 + w * 17) ^ (count * 131)
+    rng = np.random.default_rng(seed & 0xFFFFFFFF)
+
+    # Downsampled coverage so we know where still needs ink without O(n²).
+    cell = 3
+    for label in range(1, count + 1):
+        component = labels == label
+        area = int(component.sum())
+        if area < min_area:
+            continue
+        ys, xs = np.nonzero(component)
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0, x1 = int(xs.min()), int(xs.max())
+        local_r = float(dist[component].mean()) if area else 2.0
+        base_brush = max(1.7, min(max_brush, local_r * 1.1 + 0.5))
+        step = max(1.5, min(3.6, base_brush * 0.5))
+
+        cov_h = max(1, (y1 - y0) // cell + 2)
+        cov_w = max(1, (x1 - x0) // cell + 2)
+        covered = np.zeros((cov_h, cov_w), dtype=np.uint8)
+
+        def cov_idx(px: float, py: float) -> tuple[int, int]:
+            return (
+                max(0, min(cov_h - 1, int((py - y0) // cell))),
+                max(0, min(cov_w - 1, int((px - x0) // cell))),
+            )
+
+        # Target how many coverage cells should get a visit.
+        ink_cells = 0
+        cell_seeds: list[tuple[int, int]] = []
+        for cy in range(cov_h):
+            for cx in range(cov_w):
+                # Any ink in this cell?
+                yy0 = y0 + cy * cell
+                xx0 = x0 + cx * cell
+                patch = component[yy0 : min(h, yy0 + cell), xx0 : min(w, xx0 + cell)]
+                if patch.size and bool(patch.any()):
+                    ink_cells += 1
+                    # Seed near cell center if on ink.
+                    sy = min(h - 1, yy0 + cell // 2)
+                    sx = min(w - 1, xx0 + cell // 2)
+                    if component[sy, sx]:
+                        cell_seeds.append((sx, sy))
+                    else:
+                        pys, pxs = np.nonzero(patch)
+                        if len(pxs):
+                            cell_seeds.append((int(xx0 + pxs[0]), int(yy0 + pys[0])))
+
+        if not cell_seeds:
+            continue
+
+        target_cells = max(1, int(ink_cells * 0.93))
+        max_paths = max(4, min(240, int(ink_cells * 0.65) + 6))
+        visited_cells = 0
+        path_i = 0
+        seed_order = list(range(len(cell_seeds)))
+        rng.shuffle(seed_order)
+        seed_cursor = 0
+
+        def pick_start() -> tuple[float, float] | None:
+            nonlocal seed_cursor
+            # Prefer uncovered seeds, then any.
+            for _ in range(len(seed_order)):
+                sx, sy = cell_seeds[seed_order[seed_cursor % len(seed_order)]]
+                seed_cursor += 1
+                ci, cj = cov_idx(float(sx), float(sy))
+                if covered[ci, cj] == 0 and component[sy, sx]:
+                    return float(sx), float(sy)
+            # Fallback: random ink pixel in bbox.
+            for _ in range(24):
+                xi = int(rng.integers(x0, x1 + 1))
+                yi = int(rng.integers(y0, y1 + 1))
+                if component[yi, xi]:
+                    return float(xi), float(yi)
+            return None
+
+        while visited_cells < target_cells and path_i < max_paths:
+            start = pick_start()
+            if start is None:
+                break
+            x, y = start
+            # Initial direction: random, slightly biased along longer bbox axis.
+            if (x1 - x0) >= (y1 - y0):
+                ang = float(rng.uniform(-0.45, 0.45)) + float(rng.choice([0.0, math.pi]))
+            else:
+                ang = float(rng.uniform(-0.45, 0.45)) + float(rng.choice([math.pi * 0.5, -math.pi * 0.5]))
+            vx, vy = math.cos(ang), math.sin(ang)
+            points: list[Point] = [(x, y)]
+            # Variable stroke length — short flicks and longer runs mixed.
+            max_steps = int(rng.integers(16, 60))
+            stuck = 0
+            for _ in range(max_steps):
+                # Candidate turns: mostly forward, occasional big turn (wrist flick).
+                turn = float(rng.normal(0.0, 0.35))
+                if rng.random() < 0.08:
+                    turn += float(rng.choice([-1.0, 1.0])) * float(rng.uniform(0.7, 1.6))
+                c, s = math.cos(turn), math.sin(turn)
+                nvx, nvy = vx * c - vy * s, vx * s + vy * c
+                # Try a few step lengths / slight side slips to stay in ink.
+                stepped = False
+                for slip in (0.0, 0.55, -0.55, 1.1, -1.1):
+                    sx = -nvy * slip * step * 0.35
+                    sy = nvx * slip * step * 0.35
+                    step_len = step * float(rng.uniform(0.78, 1.18))
+                    nx = x + nvx * step_len + sx
+                    ny = y + nvy * step_len + sy
+                    xi, yi = int(round(nx)), int(round(ny))
+                    if 0 <= xi < w and 0 <= yi < h and component[yi, xi]:
+                        x, y = float(xi), float(yi)
+                        vx, vy = nvx, nvy
+                        points.append((x, y))
+                        ci, cj = cov_idx(x, y)
+                        if covered[ci, cj] == 0:
+                            covered[ci, cj] = 1
+                            visited_cells += 1
+                        else:
+                            # Light re-trace is ok; mark revisit so we prefer fresh areas.
+                            covered[ci, cj] = min(3, covered[ci, cj] + 1)
+                        stepped = True
+                        stuck = 0
+                        break
+                if not stepped:
+                    # Bounce: reverse or pick new angle toward uncovered ink.
+                    stuck += 1
+                    if stuck >= 3:
+                        break
+                    ang = float(rng.uniform(0.0, math.tau))
+                    vx, vy = math.cos(ang), math.sin(ang)
+                    continue
+                # Lift pen early sometimes (short 随笔).
+                if len(points) >= 8 and rng.random() < 0.028:
+                    break
+
+            if len(points) < 2:
+                path_i += 1
+                continue
+            # Soft freehand wobble on the polyline (keep endpoints near ink).
+            if len(points) >= 3:
+                wobbled: list[Point] = [points[0]]
+                for i in range(1, len(points) - 1):
+                    px, py = points[i]
+                    # Local tangent normal.
+                    ax, ay = points[i - 1]
+                    bx, by = points[i + 1]
+                    tx, ty = bx - ax, by - ay
+                    tl = math.hypot(tx, ty) or 1.0
+                    nx_, ny_ = -ty / tl, tx / tl
+                    amp = float(rng.uniform(0.2, 0.9))
+                    wobbled.append((px + nx_ * amp * float(rng.normal(0, 0.4)), py + ny_ * amp * float(rng.normal(0, 0.4))))
+                wobbled.append(points[-1])
+                points = wobbled
+
+            # Width from local thickness along path; stay modest.
+            widths: list[float] = []
+            for px, py in points:
+                xi, yi = int(round(px)), int(round(py))
+                if 0 <= xi < w and 0 <= yi < h:
+                    r = float(dist[yi, xi])
+                else:
+                    r = local_r
+                widths.append(max(1.4, min(max_brush, r * 1.08 + 0.45)))
+            # Calligraphic pulse on top.
+            pulse = _freehand_widths(len(points), float(sum(widths) / len(widths)), rng, max_brush=max_brush)
+            widths = [max(1.4, min(max_brush, 0.58 * a + 0.42 * b)) for a, b in zip(widths, pulse)]
+
+            strokes.append(
+                Stroke(
+                    points=points,
+                    color=color,
+                    source=source,
+                    width=float(sum(widths) / len(widths)),
+                    widths=widths,
+                )
+            )
+            path_i += 1
+
+    return strokes
+
+
+def _hatch_fill_strokes(
+    mask: np.ndarray,
+    min_radius: float = 4.0,
+    min_area: int = 80,
+    spacing_factor: float = 0.9,
+    dist: np.ndarray | None = None,
+    source: str = "hatch-fill",
+    color: tuple[int, int, int] = (64, 60, 62),
+    fill_all: bool = False,
+    casual: bool = True,
+) -> list[Stroke]:
+    """Deprecated scan-fill; routes to freehand scribble (no parallel brush rows)."""
+
+    if not np.any(mask):
+        return []
+    if dist is None:
+        dist = _distance_transform(mask)
+    if not fill_all:
+        erode_r = max(1, int(round(min_radius)))
+        thick_core = _erode_mask(mask, radius=erode_r)
+        if not np.any(thick_core):
+            return []
+        mask = _dilate_mask(thick_core, radius=max(1, erode_r - 1)) & mask
+        dist = _distance_transform(mask)
+    return _freehand_scribble_strokes(
+        mask,
+        dist=dist,
+        min_area=min_area,
+        source=source if source != "hatch-fill" else "ink-freehand",
+        color=color,
+        max_brush=8.0 if fill_all else 9.0,
+    )
+
+
 
 
 def _stroke_length(points: list[Point]) -> float:
@@ -422,7 +881,18 @@ def merge_nearby_strokes(
     touch_min_dot = math.cos(math.radians(touch_angle_deg))
     short_len = max(14.0, min(canvas_size) * 0.018)
     short_min_dot = math.cos(math.radians(short_angle_deg))
-    remaining = [Stroke(points=list(stroke.points), color=stroke.color, source=stroke.source) for stroke in strokes if len(stroke.points) > 1]
+    remaining = [
+        Stroke(
+            points=list(stroke.points),
+            color=stroke.color,
+            source=stroke.source,
+            width=stroke.width,
+            widths=list(stroke.widths) if stroke.widths else None,
+        )
+        for stroke in strokes
+        if len(stroke.points) > 1
+    ]
+    # Do not merge fat fill strokes into thin linework — widths would average poorly.
     remaining.sort(key=lambda stroke: _stroke_length(stroke.points), reverse=True)
     changed = True
     passes = 0
@@ -432,11 +902,20 @@ def merge_nearby_strokes(
         idx = 0
         while idx < len(remaining):
             base = remaining[idx]
+            if base.max_width(default=0.0) >= 8.0 or str(base.source).startswith(("hatch", "ink-brush", "ink-direct", "blob")):
+                idx += 1
+                continue
             best_index: int | None = None
             best_points: list[Point] | None = None
             best_gain = float("inf")
+            best_width: float | None = base.width
+            best_widths: list[float] | None = list(base.widths) if base.widths else None
             for candidate_index, candidate in enumerate(remaining):
                 if candidate_index == idx:
+                    continue
+                if candidate.max_width(default=0.0) >= 8.0 or str(candidate.source).startswith(
+                    ("hatch", "ink-brush", "ink-direct", "blob")
+                ):
                     continue
                 merged = _merge_candidate(base.points, candidate.points, max_gap, min_dot, touch_gap, touch_min_dot, short_len, short_min_dot)
                 if merged is None:
@@ -446,9 +925,15 @@ def merge_nearby_strokes(
                     best_gain = gain
                     best_index = candidate_index
                     best_points = merged
+                    scalar = [w for w in (base.width, candidate.width) if w is not None and w > 0]
+                    best_width = max(scalar) if scalar else None
+                    # Drop per-point widths on merge — geometry changed.
+                    best_widths = None
             if best_index is not None and best_points is not None:
                 base.points = best_points
                 base.source = f"{base.source}+merged"
+                base.width = best_width
+                base.widths = best_widths
                 del remaining[best_index]
                 changed = True
                 if best_index < idx:
@@ -457,16 +942,125 @@ def merge_nearby_strokes(
     return remaining
 
 
-def _resample_points(points: list[Point], spacing: float = 3.0) -> list[Point]:
+def stitch_touching_strokes(
+    strokes: list[Stroke],
+    max_gap_px: float = 1.5,
+    max_turn_deg: float = 96.0,
+) -> list[Stroke]:
+    """Join genuinely touching geometry paths without inventing long bridges.
+
+    Raster skeletons split a continuous line at every junction. A spatial
+    endpoint index keeps this pass close to linear even for detailed artwork,
+    unlike the general-purpose all-pairs merger.
+    """
+
+    usable = [stroke for stroke in strokes if len(stroke.points) > 1]
+    if len(usable) < 2:
+        return strokes
+    cell = max(1.0, float(max_gap_px))
+    min_dot = math.cos(math.radians(max_turn_deg))
+    endpoint_grid: dict[tuple[int, int], list[tuple[int, bool]]] = {}
+
+    def grid_key(point: Point) -> tuple[int, int]:
+        return (int(math.floor(point[0] / cell)), int(math.floor(point[1] / cell)))
+
+    for index, stroke in enumerate(usable):
+        endpoint_grid.setdefault(grid_key(stroke.points[0]), []).append((index, False))
+        endpoint_grid.setdefault(grid_key(stroke.points[-1]), []).append((index, True))
+
+    unused = set(range(len(usable)))
+
+    def oriented(index: int, from_end: bool) -> tuple[list[Point], list[float] | None]:
+        stroke = usable[index]
+        points = list(reversed(stroke.points)) if from_end else list(stroke.points)
+        widths = list(reversed(stroke.widths)) if from_end and stroke.widths else (
+            list(stroke.widths) if stroke.widths else None
+        )
+        return points, widths
+
+    def next_path(point: Point, direction: Point) -> tuple[int, list[Point], list[float] | None] | None:
+        gx, gy = grid_key(point)
+        best: tuple[float, int, list[Point], list[float] | None] | None = None
+        for cy in range(gy - 1, gy + 2):
+            for cx in range(gx - 1, gx + 2):
+                for index, from_end in endpoint_grid.get((cx, cy), []):
+                    if index not in unused:
+                        continue
+                    points, widths = oriented(index, from_end)
+                    gap = _point_distance(point, points[0])
+                    if gap > max_gap_px:
+                        continue
+                    candidate_direction = _unit_vector(points[0], points[1])
+                    alignment = _dot(direction, candidate_direction)
+                    if alignment < min_dot:
+                        continue
+                    score = gap + (1.0 - alignment) * max_gap_px * 0.35
+                    if best is None or score < best[0]:
+                        best = (score, index, points, widths)
+        return None if best is None else (best[1], best[2], best[3])
+
+    joined: list[Stroke] = []
+    seed_order = sorted(unused, key=lambda index: _stroke_length(usable[index].points), reverse=True)
+    for seed_index in seed_order:
+        if seed_index not in unused:
+            continue
+        unused.remove(seed_index)
+        seed = usable[seed_index]
+        chain = list(seed.points)
+        chain_widths = list(seed.widths) if seed.widths else None
+
+        for side in range(2):
+            while len(chain) > 1:
+                direction = _unit_vector(chain[-2], chain[-1])
+                candidate = next_path(chain[-1], direction)
+                if candidate is None:
+                    break
+                index, points, widths = candidate
+                unused.remove(index)
+                skip_first = _point_distance(chain[-1], points[0]) <= 1.25
+                chain.extend(points[1:] if skip_first else points)
+                if chain_widths is not None and widths is not None:
+                    chain_widths.extend(widths[1:] if skip_first else widths)
+                else:
+                    chain_widths = None
+            if side == 0:
+                chain.reverse()
+                if chain_widths is not None:
+                    chain_widths.reverse()
+
+        width = seed.width
+        if chain_widths:
+            width = float(sum(chain_widths) / len(chain_widths))
+        joined.append(
+            Stroke(
+                points=chain,
+                color=seed.color,
+                source=seed.source,
+                width=width,
+                widths=chain_widths,
+            )
+        )
+    return joined
+
+
+def _resample_points(
+    points: list[Point],
+    spacing: float = 3.0,
+    widths: list[float] | None = None,
+) -> tuple[list[Point], list[float] | None]:
     if len(points) < 2:
-        return points
+        return points, list(widths) if widths else None
+    use_widths = widths if widths and len(widths) == len(points) else None
     total = _stroke_length(points)
     if total <= spacing:
-        return [points[0], points[-1]]
+        if use_widths is None:
+            return [points[0], points[-1]], None
+        return [points[0], points[-1]], [use_widths[0], use_widths[-1]]
     targets = np.arange(0.0, total, spacing).tolist()
     if not targets or targets[-1] < total:
         targets.append(total)
     result: list[Point] = []
+    result_w: list[float] | None = [] if use_widths is not None else None
     segment_index = 0
     traversed = 0.0
     for target in targets:
@@ -480,21 +1074,38 @@ def _resample_points(points: list[Point], spacing: float = 3.0) -> list[Point]:
         seg_len = max(_point_distance(a, b), 1e-6)
         local = max(0.0, min(1.0, (target - traversed) / seg_len))
         result.append((a[0] + (b[0] - a[0]) * local, a[1] + (b[1] - a[1]) * local))
-    return result
+        if result_w is not None and use_widths is not None:
+            wa = use_widths[segment_index]
+            wb = use_widths[min(segment_index + 1, len(use_widths) - 1)]
+            result_w.append(wa + (wb - wa) * local)
+    return result, result_w
 
 
-def _chaikin_smooth(points: list[Point], iterations: int = 1) -> list[Point]:
+def _chaikin_smooth(
+    points: list[Point],
+    iterations: int = 1,
+    widths: list[float] | None = None,
+) -> tuple[list[Point], list[float] | None]:
     if len(points) < 4:
-        return points
+        return points, list(widths) if widths else None
     result = points
+    result_w = list(widths) if widths and len(widths) == len(points) else None
     for _ in range(iterations):
         smoothed: list[Point] = [result[0]]
-        for a, b in zip(result, result[1:]):
+        smoothed_w: list[float] | None = [result_w[0]] if result_w is not None else None
+        for idx, (a, b) in enumerate(zip(result, result[1:])):
             smoothed.append((a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25))
             smoothed.append((a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75))
+            if smoothed_w is not None and result_w is not None:
+                wa, wb = result_w[idx], result_w[idx + 1]
+                smoothed_w.append(wa * 0.75 + wb * 0.25)
+                smoothed_w.append(wa * 0.25 + wb * 0.75)
         smoothed.append(result[-1])
+        if smoothed_w is not None and result_w is not None:
+            smoothed_w.append(result_w[-1])
         result = smoothed
-    return result
+        result_w = smoothed_w
+    return result, result_w
 
 
 def smooth_strokes(strokes: list[Stroke], spacing: float = 3.0) -> list[Stroke]:
@@ -504,11 +1115,26 @@ def smooth_strokes(strokes: list[Stroke], spacing: float = 3.0) -> list[Stroke]:
     for stroke in strokes:
         if len(stroke.points) < 2:
             continue
-        points = _resample_points(stroke.points, spacing=spacing)
-        points = _chaikin_smooth(points, iterations=1)
-        points = _resample_points(points, spacing=spacing)
-        if len(points) > 1 and _stroke_length(points) > 2.0:
-            smoothed.append(Stroke(points=points, color=stroke.color, source=f"{stroke.source}+smooth"))
+        # Freehand fills already carry intentional wobble — do not Chaikin them flat.
+        src = str(stroke.source)
+        if src.startswith(("hatch", "ink-brush", "ink-direct", "ink-freehand", "blob")):
+            smoothed.append(stroke)
+            continue
+        points, widths = _resample_points(stroke.points, spacing=spacing, widths=stroke.widths)
+        points, widths = _chaikin_smooth(points, iterations=1, widths=widths)
+        points, widths = _resample_points(points, spacing=spacing, widths=widths)
+        is_thick = bool(widths and max(widths) >= 8.0) or (stroke.width is not None and stroke.width >= 8.0)
+        min_keep = 1.0 if is_thick else 2.0
+        if len(points) > 1 and _stroke_length(points) > min_keep:
+            smoothed.append(
+                Stroke(
+                    points=points,
+                    color=stroke.color,
+                    source=f"{stroke.source}+smooth",
+                    width=stroke.width if widths is None else float(sum(widths) / len(widths)),
+                    widths=widths,
+                )
+            )
     return smoothed
 
 
@@ -520,7 +1146,8 @@ def postprocess_strokes(
     smooth_spacing: float | None = None,
     merge_gap_px: float | None = None,
     min_length_px: float = 0.0,
-    max_merge_strokes: int | None = 700,
+    max_merge_strokes: int | None = 5000,
+    draw_mode: str = "structure-then-ink",
 ) -> list[Stroke]:
     """Apply continuity improvements before final stroke ordering."""
 
@@ -531,8 +1158,14 @@ def postprocess_strokes(
         spacing = smooth_spacing if smooth_spacing is not None else max(2.25, min(canvas_size) * 0.0035)
         processed = smooth_strokes(processed, spacing=spacing)
     if min_length_px > 0:
-        processed = [stroke for stroke in processed if _stroke_length(stroke.points) >= min_length_px]
-    return order_strokes(processed, canvas_size)
+        processed = [
+            stroke
+            for stroke in processed
+            if _stroke_length(stroke.points) >= min_length_px
+            or str(stroke.source).startswith(("hatch", "ink-brush", "ink-direct", "blob"))
+            or stroke.max_width(default=0.0) >= 8.0
+        ]
+    return order_strokes(processed, canvas_size, draw_mode=draw_mode)
 
 
 def _stroke_bounds(points: list[Point]) -> tuple[float, float, float, float]:
@@ -547,16 +1180,12 @@ def _stroke_center(points: list[Point]) -> Point:
 
 
 def _canvas_from_strokes(strokes: list[Stroke]) -> tuple[int, int]:
-    if not strokes:
-        return (1, 1)
-    max_x = max(_stroke_bounds(stroke.points)[2] for stroke in strokes)
-    max_y = max(_stroke_bounds(stroke.points)[3] for stroke in strokes)
-    return (max(1, int(math.ceil(max_x + 1))), max(1, int(math.ceil(max_y + 1))))
+    xs = [p[0] for s in strokes for p in s.points]
+    ys = [p[1] for s in strokes for p in s.points]
+    return int(max(xs)) + 8, int(max(ys)) + 8
 
 
-def order_strokes(strokes: list[Stroke], canvas_size: tuple[int, int] | None = None) -> list[Stroke]:
-    """Order strokes top-to-bottom, left-to-right, with local continuity."""
-
+def _order_strokes_internal(strokes: list[Stroke], canvas_size: tuple[int, int] | None = None) -> list[Stroke]:
     remaining = [s for s in strokes if len(s.points) > 1 and _stroke_length(s.points) > 1.0]
     ordered: list[Stroke] = []
     current: Point | None = None
@@ -598,18 +1227,110 @@ def order_strokes(strokes: list[Stroke], canvas_size: tuple[int, int] | None = N
                         backtrack_penalty += width * 0.35
                 return visual + continuity + backtrack_penalty - long_line_bonus
 
-            min_row = min(row_of(stroke) for stroke in remaining)
-            candidates = [idx for idx, stroke in enumerate(remaining) if row_of(stroke) == min_row]
+            endpoint_distances = [
+                min(_point_distance(current, stroke.points[0]), _point_distance(current, stroke.points[-1]))
+                for stroke in remaining
+            ]
+            local_limit = max(36.0, min(width, height) * 0.055)
+            candidates = [idx for idx, distance in enumerate(endpoint_distances) if distance <= local_limit]
+            if not candidates:
+                min_row = min(row_of(stroke) for stroke in remaining)
+                candidates = [idx for idx, stroke in enumerate(remaining) if row_of(stroke) == min_row]
             index = min(candidates, key=score)
         stroke = remaining.pop(index)
         if current is not None:
             start, end = stroke.points[0], stroke.points[-1]
             if math.hypot(end[0] - current[0], end[1] - current[1]) < math.hypot(start[0] - current[0], start[1] - current[1]):
                 stroke.points = list(reversed(stroke.points))
+                if stroke.widths:
+                    stroke.widths = list(reversed(stroke.widths))
         ordered.append(stroke)
         current = stroke.points[-1]
         last_center = _stroke_center(stroke.points)
     return ordered
+
+
+def _is_fill_stroke(stroke: Stroke) -> bool:
+    """All freehand ink is fill; no skeleton outlines remain."""
+    src = str(stroke.source)
+    return (
+        src.startswith("hatch")
+        or src.startswith("ink-brush")
+        or src.startswith("ink-direct")
+        or src.startswith("ink-freehand")
+        or src.startswith("blob")
+        or "fill" in src
+        or "wash" in src
+        or stroke.max_width(default=0.0) >= 8.0
+    )
+
+
+def _stroke_bbox_center(stroke: Stroke) -> Point:
+    return _stroke_center(stroke.points)
+
+
+def _region_order_strokes(strokes: list[Stroke], canvas_size: tuple[int, int] | None) -> list[Stroke]:
+    """Keep nearby paths together so a local form finishes before moving on."""
+
+    if len(strokes) < 2:
+        return strokes
+    width, height = canvas_size or _canvas_from_strokes(strokes)
+    gap = max(12.0, min(width, height) * 0.035)
+    boxes = [_stroke_bounds(stroke.points) for stroke in strokes]
+    parent = list(range(len(strokes)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        a, b = find(left), find(right)
+        if a != b:
+            parent[b] = a
+
+    # Bbox proximity is deliberately used instead of stroke width: hair,
+    # sleeves, and wash fragments should remain one local drawing region.
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        for j in range(i):
+            a0, b0, a1, b1 = boxes[j]
+            horizontal_gap = max(0.0, max(a0, x0) - min(a1, x1))
+            vertical_gap = max(0.0, max(b0, y0) - min(b1, y1))
+            if horizontal_gap <= gap and vertical_gap <= gap:
+                union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(strokes)):
+        groups.setdefault(find(index), []).append(index)
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda indexes: (
+            min(boxes[index][1] for index in indexes),
+            min(boxes[index][0] for index in indexes),
+        ),
+    )
+    return [strokes[index] for indexes in ordered_groups for index in indexes]
+
+
+def order_strokes(
+    strokes: list[Stroke],
+    canvas_size: tuple[int, int] | None = None,
+    draw_mode: str = "structure-then-ink",
+) -> list[Stroke]:
+    """Order freehand strokes top-to-bottom / left-to-right with continuity.
+
+    Geometry strokes are ordered before wash/fill strokes. structure-then-ink
+    paints solid structure before wash; direct-ink keeps one spatial pass.
+    """
+    mode = _normalize_draw_mode(draw_mode)
+    if mode == "direct-ink":
+        return _region_order_strokes(_order_strokes_internal(strokes, canvas_size), canvas_size)
+
+    # Solid structure first, wash second.
+    solids = [s for s in strokes if not str(s.source).endswith("wash") and "wash" not in str(s.source)]
+    washes = [s for s in strokes if str(s.source).endswith("wash") or "wash" in str(s.source)]
+    return _order_strokes_internal(solids, canvas_size) + _order_strokes_internal(washes, canvas_size)
 
 
 def _detail_preset(stroke_detail: str, canvas_size: tuple[int, int]) -> dict[str, float | int | bool]:
@@ -630,40 +1351,407 @@ def _detail_preset(stroke_detail: str, canvas_size: tuple[int, int]) -> dict[str
     return preset
 
 
+def _distance_transform(mask: np.ndarray) -> np.ndarray:
+    """Euclidean distance to background for each foreground pixel."""
+    try:
+        import cv2
+
+        return cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
+    except Exception:
+        # Lightweight fallback without OpenCV: iterative morphological distance.
+        dist = np.zeros(mask.shape, dtype=np.float32)
+        current = mask.astype(bool)
+        radius = 0
+        while np.any(current) and radius < 64:
+            radius += 1
+            dist[current] = float(radius)
+            # erode by 1
+            padded = np.pad(current, 1, mode="constant", constant_values=False)
+            eroded = np.ones_like(current, dtype=bool)
+            for dy in range(3):
+                for dx in range(3):
+                    eroded &= padded[dy : dy + current.shape[0], dx : dx + current.shape[1]]
+            current = eroded
+        return dist
+
+
+def _stroke_widths_from_distance(
+    paths: list[np.ndarray],
+    dist: np.ndarray,
+    min_width: float = 2.0,
+    max_width: float = 28.0,
+) -> list[float]:
+    """Estimate a pen width for each skeleton path from local ink thickness."""
+    heights, width = dist.shape
+    widths: list[float] = []
+    for path in paths:
+        samples: list[float] = []
+        for x, y in path:
+            xi, yi = int(x), int(y)
+            if 0 <= xi < width and 0 <= yi < heights:
+                # Diameter ≈ 2 * radius-to-edge.
+                samples.append(float(dist[yi, xi]) * 2.0)
+        if not samples:
+            widths.append(min_width)
+            continue
+        # Median is robust to junction spikes; slight boost so solid ink fills.
+        med = float(np.median(samples))
+        est = max(min_width, min(max_width, med * 1.15 + 0.5))
+        widths.append(est)
+    return widths
+
+
+def _ink_brush_fill_strokes(
+    mask: np.ndarray,
+    min_area: int = 80,
+    spacing: float = 3.5,
+    brush_width: float | None = None,
+    color: tuple[int, int, int] = (64, 60, 62),
+) -> list[Stroke]:
+    """Dense brush-scan fills that paint solid ink regions fluidly.
+
+    Unlike sparse 45° hatch lines, spacing is tight relative to brush width so
+    consecutive passes blend into continuous ink instead of visible stripes.
+    """
+    h, w = mask.shape
+    if not np.any(mask):
+        return []
+    labels, num_labels = _label_components(mask)
+    strokes: list[Stroke] = []
+    bw = float(brush_width) if brush_width and brush_width > 0 else max(3.0, spacing * 1.35)
+    step = max(1.5, min(spacing, bw * 0.55))
+
+    for label in range(1, num_labels + 1):
+        coords = np.argwhere(labels == label)
+        area = int(len(coords))
+        if area < min_area:
+            continue
+        y0 = int(coords[:, 0].min())
+        y1 = int(coords[:, 0].max())
+        x0 = int(coords[:, 1].min())
+        x1 = int(coords[:, 1].max())
+        bw_box = x1 - x0 + 1
+        bh_box = y1 - y0 + 1
+        # Prefer horizontal brush for wide regions, vertical for tall ones.
+        horizontal = bw_box >= bh_box
+        reverse = False
+        if horizontal:
+            for y in np.arange(y0 + step * 0.5, y0 + bh_box, step):
+                yi = int(round(y))
+                if yi < 0 or yi >= h:
+                    continue
+                row = labels[yi, x0 : x0 + bw_box] == label
+                if not np.any(row):
+                    continue
+                xs = np.flatnonzero(row) + x0
+                # Split into contiguous runs.
+                breaks = np.where(np.diff(xs) > 1)[0]
+                starts = np.r_[0, breaks + 1]
+                ends = np.r_[breaks, len(xs) - 1]
+                for s_i, e_i in zip(starts, ends):
+                    x_start, x_end = int(xs[s_i]), int(xs[e_i])
+                    if x_end - x_start < 2:
+                        continue
+                    span = x_end - x_start
+                    sample_x = np.linspace(x_start, x_end, max(3, int(span / 18) + 2))
+                    phase = label * 0.73 + yi * 0.11
+                    wobble = min(1.8, bw * 0.16)
+                    candidate = [
+                        (float(x), float(yi + math.sin(phase + index * 1.7) * wobble))
+                        for index, x in enumerate(sample_x)
+                    ]
+                    pts = candidate if all(
+                        0 <= int(round(px)) < w
+                        and 0 <= int(round(py)) < h
+                        and labels[int(round(py)), int(round(px))] == label
+                        for px, py in candidate
+                    ) else [(float(x_start), float(yi)), (float(x_end), float(yi))]
+                    if reverse:
+                        pts = list(reversed(pts))
+                    strokes.append(
+                        Stroke(
+                            points=pts,
+                            color=color,
+                            source="ink-brush-fill",
+                            width=bw,
+                            widths=[bw * (0.88 + 0.16 * math.sin(phase + index)) for index in range(len(pts))],
+                        )
+                    )
+                    reverse = not reverse
+        else:
+            for x in np.arange(x0 + step * 0.5, x0 + bw_box, step):
+                xi = int(round(x))
+                if xi < 0 or xi >= w:
+                    continue
+                col = labels[y0 : y0 + bh_box, xi] == label
+                if not np.any(col):
+                    continue
+                ys = np.flatnonzero(col) + y0
+                breaks = np.where(np.diff(ys) > 1)[0]
+                starts = np.r_[0, breaks + 1]
+                ends = np.r_[breaks, len(ys) - 1]
+                for s_i, e_i in zip(starts, ends):
+                    y_start, y_end = int(ys[s_i]), int(ys[e_i])
+                    if y_end - y_start < 2:
+                        continue
+                    span = y_end - y_start
+                    sample_y = np.linspace(y_start, y_end, max(3, int(span / 18) + 2))
+                    phase = label * 0.61 + xi * 0.13
+                    wobble = min(1.8, bw * 0.16)
+                    candidate = [
+                        (float(xi + math.sin(phase + index * 1.7) * wobble), float(y))
+                        for index, y in enumerate(sample_y)
+                    ]
+                    pts = candidate if all(
+                        0 <= int(round(px)) < w
+                        and 0 <= int(round(py)) < h
+                        and labels[int(round(py)), int(round(px))] == label
+                        for px, py in candidate
+                    ) else [(float(xi), float(y_start)), (float(xi), float(y_end))]
+                    if reverse:
+                        pts = list(reversed(pts))
+                    strokes.append(
+                        Stroke(
+                            points=pts,
+                            color=color,
+                            source="ink-brush-fill",
+                            width=bw,
+                            widths=[bw * (0.88 + 0.16 * math.sin(phase + index)) for index in range(len(pts))],
+                        )
+                    )
+                    reverse = not reverse
+    return strokes
+
+
+def _mask_to_geometry_strokes(
+    mask: np.ndarray,
+    dist: np.ndarray,
+    *,
+    min_points: int,
+    source: str,
+    color: tuple[int, int, int],
+    min_length: float = 0.0,
+    max_width: float = 28.0,
+) -> list[Stroke]:
+    """Trace source geometry without adding random hand-drawn drift."""
+
+    if not np.any(mask):
+        return []
+    skeleton = zhang_suen_skeleton(mask)
+    paths = trace_8connected(skeleton, min_points=min_points)
+    strokes: list[Stroke] = []
+    for path in paths:
+        points = [(float(x), float(y)) for x, y in path]
+        if len(points) < 2 or _stroke_length(points) < min_length:
+            continue
+        widths = _widths_for_path_from_dist(path, dist, min_width=1.5, max_width=max_width)
+        strokes.append(
+            Stroke(
+                points=points,
+                color=color,
+                source=source,
+                width=float(sum(widths) / max(1, len(widths))),
+                widths=widths,
+            )
+        )
+    return strokes
+
+
+def _apply_source_tones(strokes: list[Stroke], gray: np.ndarray) -> list[Stroke]:
+    """Use the source raster tone for each extracted path instead of one ink color."""
+
+    height, width = gray.shape
+    toned: list[Stroke] = []
+    for stroke in strokes:
+        samples: list[float] = []
+        for x, y in stroke.points:
+            xi = max(0, min(width - 1, int(round(x))))
+            yi = max(0, min(height - 1, int(round(y))))
+            samples.append(float(gray[yi, xi]))
+        tone = int(round(float(np.median(samples)))) if samples else 80
+        # Keep the slight warm-black bias used by the renderer while retaining
+        # the measured light/dark difference between ink layers.
+        tone = max(18, min(235, tone))
+        stroke.color = (tone, max(0, tone - 2), max(0, tone - 4))
+        toned.append(stroke)
+    return toned
+
+
+def _normalize_draw_mode(draw_mode: str | None) -> str:
+    mode = (draw_mode or "structure-then-ink").strip().lower()
+    if mode in {"direct", "direct-ink", "ink-direct", "one-pass", "fluid", "一气呵成"}:
+        return "direct-ink"
+    return "structure-then-ink"
+
+
 def to_strokes(
     png_path: Path,
     canvas_size: tuple[int, int],
     threshold: int | None = None,
-    stroke_detail: str = "rich",
+    stroke_detail: str = "max",
+    disable_hatching: bool = False,
+    draw_mode: str = "structure-then-ink",
+    ink_darkness: int = 90,
+    ink_brush: float = 5.5,
 ) -> list[Stroke]:
-    """Convert raster line art into ordered stroke paths.
+    """Convert raster line art into ordered freehand stroke paths.
 
-    Example:
-        >>> isinstance(to_strokes(Path("missing.png"), (640, 360)), list)  # doctest: +IGNORE_EXCEPTION_DETAIL
-        Traceback (most recent call last):
-        ...
+    Structure layers follow the source geometry; wash layers use organic
+    coverage strokes. Never uses parallel scan-brush rows for line structure.
+    Both draw modes paint ink mass as continuous freehand pen strokes (随笔):
+
+      - structure-then-ink: darker solid freehand first, then soft wash freehand
+      - direct-ink: solid + wash freehand in one spatial pass (一气呵成)
+
+    ink_darkness: 0–100 (0=white, 100=pure black, default 90)
+    ink_brush: max stroke width in pixels (default 5.5)
     """
 
+    import os
+
+    mode = _normalize_draw_mode(draw_mode)
+    pure_ink = mode == "direct-ink"
+
+    darkness = max(0, min(100, int(ink_darkness)))
+    v = int(round(255 * (1.0 - darkness / 100.0)))
+    ink_color = (max(0, v), max(0, v - 2), max(0, v - 4))
+    ink_solid_color = (max(0, v + 6), max(0, v + 4), max(0, v + 2))
+    brush = max(1.5, float(ink_brush))
+
+    # Ink-wash pipeline sets one of these; prefer explicit provider markers.
+    is_ink = any(
+        key in os.environ
+        for key in (
+            "INKWASH_BONE_DELTA",
+            "INKWASH_DARK_THRESHOLD",
+            "INKWASH_MID_DELTA",
+            "INKWASH_PALE_DELTA",
+            "WHITEBOARD_INKWASH_MODE",
+        )
+    )
     detail = _detail_preset(stroke_detail, canvas_size)
-    threshold = int(threshold if threshold is not None else detail["threshold"])
+    if threshold is None:
+        if is_ink:
+            # Structure tiers from run_inkwash_cv are 0 (bone) and ~55 (mid).
+            threshold = int(os.getenv("INKWASH_DRAW_THRESH", "90"))
+        else:
+            threshold = int(detail["threshold"])
+    else:
+        threshold = int(threshold)
+
     source, bounds = load_on_canvas_with_bounds(png_path, canvas_size)
-    mask = suppress_canvas_border(binarize(np.asarray(source.convert("L")), threshold), bounds=bounds)
+    gray = np.asarray(source.convert("L"))
+    mask = suppress_canvas_border(binarize(gray, threshold), bounds=bounds)
     if not np.any(mask):
         return []
-    skel = zhang_suen_skeleton(mask)
-    paths = trace_8connected(skel, min_points=int(detail["min_points"]))
-    strokes = [Stroke(points=[(float(x), float(y)) for x, y in path], source="skeleton") for path in paths]
+
+    min_side = min(canvas_size)
+    strokes: list[Stroke] = []
+    dist = _distance_transform(mask)
+
+    # Bridge tiny gaps only when ink already has body (helps broken freehand).
+    interior = _erode_mask(mask, radius=1)
+    if np.any(interior) and float(interior.sum()) >= max(8.0, float(mask.sum()) * 0.08):
+        mask = _dilate_mask(mask, radius=1)
+        dist = _distance_transform(mask)
+
+    # --- Geometry-preserving structure + organic wash; no scan-brush rows ---
+    # disable_hatching is ignored for generation (we never hatch); kept for API compat.
+    _ = disable_hatching
+    if is_ink:
+        solid_thresh = int(os.getenv("INKWASH_SOLID_THRESH", "100"))
+        solid_mask = suppress_canvas_border(binarize(gray, solid_thresh), bounds=bounds)
+        solid_dist = _distance_transform(solid_mask) if np.any(solid_mask) else dist
+
+        # Structure lines follow the extracted geometry. Only the wash layer
+        # below uses organic freehand coverage.
+        solid_src = "ink-direct" if pure_ink else "ink-freehand"
+        strokes.extend(
+            _mask_to_geometry_strokes(
+                solid_mask,
+                dist=solid_dist,
+                min_points=int(detail["min_points"]),
+                source=solid_src,
+                color=ink_solid_color if pure_ink else ink_color,
+                min_length=0.0 if stroke_detail == "max" else float(detail["min_length"]),
+                max_width=brush + 0.3,
+            )
+        )
+
+        # Broad ink bodies use irregular, boundary-constrained brush passes
+        # instead of evenly spaced scan rows. The paths mimic push/pull ink
+        # movement while remaining inside the extracted mask.
+        strokes.extend(
+            _freehand_scribble_strokes(
+                solid_mask,
+                dist=solid_dist,
+                min_area=max(18, int(min_side * 0.004)),
+                source="ink-freehand-fill",
+                color=ink_color,
+                max_brush=max(brush + 1.5, brush * 1.7),
+            )
+        )
+
+        # Soft wash follows the extracted raster geometry too. Random
+        # meanders here made the final linework visibly different from the
+        # preview, especially on broad or pale ink strokes.
+        wash_thresh = int(os.getenv("INKWASH_WASH_DRAW_THRESH", "220"))
+        wash_mask = suppress_canvas_border(binarize(gray, wash_thresh), bounds=bounds) & ~solid_mask
+        if np.any(wash_mask):
+            wash_dist = _distance_transform(wash_mask)
+            wash_src = "ink-direct-wash" if pure_ink else "ink-freehand-wash"
+            strokes.extend(
+                _mask_to_geometry_strokes(
+                    wash_mask,
+                    dist=wash_dist,
+                    min_points=int(detail["min_points"]),
+                    source=wash_src,
+                    color=ink_color,
+                    min_length=0.0 if stroke_detail == "max" else float(detail["min_length"]),
+                    max_width=brush + 1.0,
+                )
+            )
+    else:
+        # For ordinary line art, source geometry is authoritative. Random
+        # meanders make a clean extracted line look rough in the final video.
+        strokes.extend(
+            _mask_to_geometry_strokes(
+                mask,
+                dist=dist,
+                min_points=int(detail["min_points"]),
+                source="raster-geometry",
+                color=ink_color,
+                min_length=0.0 if stroke_detail == "max" else float(detail["min_length"]),
+                max_width=brush,
+            )
+        )
+
+        # Skeleton tracing splits continuous contours at junctions. Reconnect
+        # only endpoints that physically touch and have a plausible pen turn.
+        strokes = stitch_touching_strokes(strokes, max_gap_px=1.5)
+
+    if is_ink:
+        # Preserve the extracted浓/中/浅墨 tier on every traced path so the
+        # renderer can reproduce density differences instead of flattening
+        # all water-ink regions into one black stroke color.
+        strokes = _apply_source_tones(strokes, gray)
+
     strokes = filter_canvas_border_strokes(strokes, canvas_size, bounds=bounds)
+
+    # Freehand paths are already organic — never merge into long centerline zigzags.
+    min_len = min(float(detail["min_length"]), 2.0)
     return postprocess_strokes(
         strokes,
         canvas_size,
         smooth=True,
-        merge=bool(detail["merge"]),
+        merge=False,
         smooth_spacing=float(detail["smooth_spacing"]) if detail["smooth_spacing"] is not None else None,
         merge_gap_px=float(detail["merge_gap"]) if detail["merge_gap"] is not None else None,
-        min_length_px=float(detail["min_length"]),
-        max_merge_strokes=int(detail["max_merge_strokes"]) if detail["max_merge_strokes"] is not None else None,
+        min_length_px=min_len,
+        max_merge_strokes=0,
+        draw_mode=mode,
     )
+
 
 
 def _parse_float(value: str | None, default: float = 0.0) -> float:

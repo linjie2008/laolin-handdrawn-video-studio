@@ -9,6 +9,10 @@ dist/
 work/
 out/
 output/
+tmp/
+temp_input*.png
+temp_input*.svg
+assets/fonts/fangzheng-dacao/
 *.mp4
 *.mp3
 *.wav

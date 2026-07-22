@@ -11,6 +11,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -67,6 +68,37 @@ class Anime2SketchLineArt(ExternalCommandLineArt):
         super().__init__(command, "anime2sketch")
 
 
+class DoodleColorLineArt(LineArtProvider):
+    """Extract clean contours and color regions through separate channels."""
+
+    def __init__(self, color_command: str, line_command: str | None) -> None:
+        self.color_command = color_command
+        self.line_command = line_command
+
+    def extract(self, color_png: Path, out_png: Path) -> Path:
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            prefix="whiteboard-doodle-structure-",
+            suffix=".png",
+            dir=out_png.parent,
+            delete=False,
+        )
+        fallback_path = Path(handle.name)
+        handle.close()
+        try:
+            # This pass writes the independent color reference and palette via
+            # DOODLE_COLOR_OUTPUT / DOODLE_PALETTE_OUTPUT. Its bitmap is only
+            # a fallback; color boundaries must never become drawing strokes.
+            ExternalCommandLineArt(self.color_command, "doodle-color").extract(color_png, fallback_path)
+            if self.line_command:
+                Anime2SketchLineArt(self.line_command).extract(color_png, out_png)
+            else:
+                shutil.copyfile(fallback_path, out_png)
+            return out_png
+        finally:
+            fallback_path.unlink(missing_ok=True)
+
+
 def get_lineart_provider(name: str = "auto") -> LineArtProvider:
     """Return a configured local line-art provider."""
 
@@ -117,6 +149,35 @@ def get_lineart_provider(name: str = "auto") -> LineArtProvider:
         if not command:
             raise RuntimeError("Anime2Sketch command not found. Set WHITEBOARD_ANIME2SKETCH_CMD.")
         return Anime2SketchLineArt(command)
+    if normalized in {"ink-wash", "modern-ink"}:
+        command = _command_from_env_path_or_local_wrapper(
+            "WHITEBOARD_INKWASH_CMD",
+            "inkwash-cv",
+            "run_inkwash_cv.py",
+            _inkwash_ready,
+            strict_local=True,
+        )
+        if not command:
+            raise RuntimeError("Ink-wash CV command not found. Ensure tools/lineart/run_inkwash_cv.py exists.")
+        return ExternalCommandLineArt(command, "ink-wash")
+    if normalized in {"doodle", "doodle-color", "color-doodle"}:
+        color_command = _command_from_env_path_or_local_wrapper(
+            "WHITEBOARD_DOODLE_COLOR_CMD",
+            "doodle-color-lineart",
+            "run_doodle_color_cv.py",
+            _doodle_color_ready,
+            strict_local=True,
+        )
+        if not color_command:
+            raise RuntimeError("Doodle color extractor not found. Ensure tools/lineart/run_doodle_color_cv.py exists.")
+        line_command = _command_from_env_path_or_local_wrapper(
+            "WHITEBOARD_ANIME2SKETCH_CMD",
+            "anime2sketch-lineart",
+            "run_anime2sketch.py",
+            _anime2sketch_weights_ready,
+            strict_local=True,
+        )
+        return DoodleColorLineArt(color_command, line_command)
     raise ValueError(f"Unknown line-art provider: {name}")
 
 
@@ -201,6 +262,18 @@ def _anime2sketch_weights_ready(wrapper: Path) -> bool:
     return (weights / "netG.pth").exists() or (weights / "improved.bin").exists()
 
 
+def _inkwash_ready(wrapper: Path) -> bool:
+    # Prefer real source; fall back to legacy bytecode-only install.
+    if wrapper.exists() and wrapper.stat().st_size > 500:
+        return True
+    pyc = wrapper.parent / "__pycache__" / "run_inkwash_cv.cpython-311.pyc"
+    return pyc.exists()
+
+
+def _doodle_color_ready(wrapper: Path) -> bool:
+    return wrapper.exists() and wrapper.stat().st_size > 500
+
+
 def _postprocess_extracted_lineart(image_path: Path, provider_name: str) -> None:
     """Convert neural pencil output into cleaner whiteboard line art.
 
@@ -209,6 +282,10 @@ def _postprocess_extracted_lineart(image_path: Path, provider_name: str) -> None
     skeleton tracing. The default cleanup keeps darker semantic contours,
     removes tiny isolated components, and writes pure black-on-white output.
     """
+
+    if provider_name.lower() in ("ink-wash", "modern-ink", "doodle-color"):
+        _clean_canvas_edges(image_path)
+        return
 
     params = _lineart_cleanup_params(provider_name)
     if params is None:

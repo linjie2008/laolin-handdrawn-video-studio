@@ -48,3 +48,4 @@ whiteboard_skill = ["prompts/*.txt", "assets/hands/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]

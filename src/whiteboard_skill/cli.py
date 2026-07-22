@@ -16,6 +16,7 @@ from .pipeline import run_pipeline
 from .providers import get_providers
 from .providers.lineart import get_lineart_provider, vectorize_with_vtracer
 from .scene_split import split_script
+from .ui_state import DEFAULT_DRAWING_TOOL
 from .whiteboard import DEFAULT_LINE_ART_SNAP_THRESHOLD, available_hands, render_image
 
 
@@ -94,12 +95,24 @@ def main(argv: list[str] | None = None) -> int:
                 color_fill_blocks=args.color_blocks,
                 hand_style=args.hand,
                 hand_scale=args.hand_scale,
+                color_hand_style=args.color_hand,
                 draw_text=args.draw_text,
                 draw_text_position=args.draw_text_position,
+                theme_text=args.theme,
+                theme_font_style=args.theme_font,
+                theme_font_size=args.theme_font_size,
+                theme_position=args.theme_position,
+                seal_style=args.seal_style,
+                seal_text=args.seal_text,
+                seal_position=args.seal_position,
                 line_art_snap=not args.no_lineart_snap,
                 line_art_snap_threshold=args.lineart_snap_threshold,
                 line_thickness=args.line_thickness,
                 stroke_detail=args.stroke_detail,
+                disable_hatching=args.no_hatching,
+                draw_mode=getattr(args, "draw_mode", "direct-ink"),
+                ink_darkness=args.ink_darkness,
+                ink_brush=args.ink_brush,
             )
             print(args.output)
             return 0
@@ -126,12 +139,24 @@ def main(argv: list[str] | None = None) -> int:
                 color_fill_blocks=args.color_blocks,
                 hand_style=args.hand,
                 hand_scale=args.hand_scale,
+                color_hand_style=args.color_hand,
                 draw_text=args.draw_text,
                 draw_text_position=args.draw_text_position,
+                theme_text=args.theme,
+                theme_font_style=args.theme_font,
+                theme_font_size=args.theme_font_size,
+                theme_position=args.theme_position,
+                seal_style=args.seal_style,
+                seal_text=args.seal_text,
+                seal_position=args.seal_position,
                 line_art_snap=not args.no_lineart_snap,
                 line_art_snap_threshold=args.lineart_snap_threshold,
                 line_thickness=args.line_thickness,
                 stroke_detail=args.stroke_detail,
+                disable_hatching=args.no_hatching,
+                draw_mode=getattr(args, "draw_mode", "direct-ink"),
+                ink_darkness=args.ink_darkness,
+                ink_brush=args.ink_brush,
             )
             print(args.output)
             return 0
@@ -196,7 +221,7 @@ def _build_parser() -> argparse.ArgumentParser:
     normalize.add_argument("--clear-edge", type=int, default=6, help="Clear this many pixels on each canvas edge to remove generated borders.")
     normalize.set_defaults(command="normalize-lineart")
 
-    lineart_provider_choices = ["auto", "informative", "anime2sketch", "anime", "manga"]
+    lineart_provider_choices = ["auto", "informative", "anime2sketch", "anime", "manga", "ink-wash", "modern-ink", "doodle-color"]
 
     extract = sub.add_parser("extract-lineart", help="Extract local line art from a color image using installed neural providers.")
     extract.add_argument("image", type=Path)
@@ -217,16 +242,37 @@ def _build_parser() -> argparse.ArgumentParser:
     photo.add_argument("--height", type=int, help="Output height. If omitted, render-photo uses the extracted line-art image height.")
     photo.add_argument("--tail-color", type=float, default=2.0)
     photo.add_argument("--source-fit", choices=["exact", "blur-fill", "contain", "cover"], default="exact")
-    photo.add_argument("--color-fill", choices=["contour-wipe", "brush-scan", "top-down-blocks", "fade"], default="contour-wipe")
+    photo.add_argument("--color-fill", choices=["natural-repair", "lineart-gap-fill", "brush-path", "contour-wipe", "brush-scan", "top-down-blocks", "fade", "doodle-fill", "quill-fill"], default="natural-repair")
     photo.add_argument("--color-blocks", type=int, default=18)
     photo.add_argument("--no-lineart-snap", action="store_true")
     photo.add_argument("--lineart-snap-threshold", type=int, default=DEFAULT_LINE_ART_SNAP_THRESHOLD)
     photo.add_argument("--line-thickness", type=int, default=0, help="Rendered stroke width. Use 0 to adapt to the source line art, or a positive value to override it.")
-    photo.add_argument("--stroke-detail", choices=["balanced", "rich", "max"], default="rich")
+    photo.add_argument("--stroke-detail", choices=["balanced", "rich", "max"], default="max")
     photo.add_argument("--draw-text")
     photo.add_argument("--draw-text-position", choices=["bottom", "top", "center"], default="bottom")
-    photo.add_argument("--hand", default="asian")
+    photo.add_argument("--theme", help="Write this theme after coloring and before the seal.")
+    photo.add_argument("--theme-font", choices=["mao", "cursive"], default="mao")
+    photo.add_argument("--theme-font-size", type=int, default=72)
+    photo.add_argument("--theme-position", choices=["right", "left", "top", "bottom", "center"], default="right")
+    photo.add_argument("--seal-style", choices=["vintage", "inkwash", "circle", "ellipse", "white-text", "borderless"], default="white-text")
+    photo.add_argument("--seal-text", default="老林涂鸦")
+    photo.add_argument(
+        "--seal-position",
+        default="left-center",
+        help="Preset name (left-top, center-center, right-bottom, ...) or free 'x,y' percentages of the frame, e.g. 72,88.",
+    )
+    photo.add_argument("--hand", default=DEFAULT_DRAWING_TOOL)
     photo.add_argument("--hand-scale", type=float, default=1.0)
+    photo.add_argument("--color-hand", default="brush", help="Coloring cursor: brush (default), quill, rooster-quill, procedural, none, or a custom PNG/WebP path.")
+    photo.add_argument("--no-hatching", action="store_true", help="Disable hatch fills for thick solid areas.")
+    photo.add_argument(
+        "--draw-mode",
+        choices=["structure-then-ink", "direct-ink"],
+        default="direct-ink",
+        help="Drawing mode: structure-then-ink (skeleton then fill) or direct-ink (pure brush mass, no skeleton).",
+    )
+    photo.add_argument("--ink-darkness", type=int, default=90, help="Ink darkness 0–100 (0=white, 100=pure black, default 90).")
+    photo.add_argument("--ink-brush", type=float, default=5.5, help="Max freehand stroke width in pixels (default 5.5).")
     photo.set_defaults(command="render-photo")
 
     render = sub.add_parser("render-image", help="Render one PNG/SVG image into a hand-drawn MP4.")
@@ -241,16 +287,37 @@ def _build_parser() -> argparse.ArgumentParser:
     render.add_argument("--mode", choices=["smooth", "grid"], default="smooth", help="Compatibility option. Smooth is the maintained renderer.")
     render.add_argument("--source-image", type=Path, help="Optional original/color image used for the final color fade while drawing from the line-art image.")
     render.add_argument("--source-fit", choices=["exact", "blur-fill", "contain", "cover"], default="blur-fill", help="How to fit --source-image for the final color fill.")
-    render.add_argument("--color-fill", choices=["contour-wipe", "brush-scan", "top-down-blocks", "fade"], default="contour-wipe", help="Final color fill style.")
+    render.add_argument("--color-fill", choices=["natural-repair", "lineart-gap-fill", "brush-path", "contour-wipe", "brush-scan", "top-down-blocks", "fade", "doodle-fill", "quill-fill"], default="natural-repair", help="Final color fill style.")
     render.add_argument("--color-blocks", type=int, default=18, help="Number of horizontal blocks used by top-down color fill.")
     render.add_argument("--no-lineart-snap", action="store_true", help="Disable snapping to the original complete line-art image before color fill.")
     render.add_argument("--lineart-snap-threshold", type=int, default=DEFAULT_LINE_ART_SNAP_THRESHOLD, help="Threshold used by line-art snap. Lower avoids thickening/noise from gray pixels.")
     render.add_argument("--line-thickness", type=int, default=0, help="Rendered stroke width. Use 0 to adapt to the source line art, or a positive value to override it.")
-    render.add_argument("--stroke-detail", choices=["balanced", "rich", "max"], default="rich", help="Raster stroke extraction detail. Rich keeps short semantic details; max keeps tiny logo/facial strokes.")
+    render.add_argument("--stroke-detail", choices=["balanced", "rich", "max"], default="max", help="Raster stroke extraction detail. Rich keeps short semantic details; max keeps tiny logo/facial strokes.")
     render.add_argument("--draw-text", help="Append a short hand-drawn text title after the image strokes, for example: --draw-text '温馨的一家'.")
     render.add_argument("--draw-text-position", choices=["bottom", "top", "center"], default="bottom", help="Placement for --draw-text.")
-    render.add_argument("--hand", default="asian", help="Hand cursor: asian (default), black, children, white, procedural, none, or a custom PNG/WebP path.")
+    render.add_argument("--theme", help="Write this theme after coloring and before the seal.")
+    render.add_argument("--theme-font", choices=["mao", "cursive"], default="mao")
+    render.add_argument("--theme-font-size", type=int, default=72)
+    render.add_argument("--theme-position", choices=["right", "left", "top", "bottom", "center"], default="right")
+    render.add_argument("--seal-style", choices=["vintage", "inkwash", "circle", "ellipse", "white-text", "borderless"], default="white-text")
+    render.add_argument("--seal-text", default="老林涂鸦")
+    render.add_argument(
+        "--seal-position",
+        default="left-center",
+        help="Preset name (left-top, center-center, right-bottom, ...) or free 'x,y' percentages of the frame, e.g. 72,88.",
+    )
+    render.add_argument("--hand", default=DEFAULT_DRAWING_TOOL, help="Drawing cursor (default: zhubajie-run), or another built-in/custom cursor.")
     render.add_argument("--hand-scale", type=float, default=1.0)
+    render.add_argument("--color-hand", default="brush", help="Coloring cursor: brush (default), quill, rooster-quill, procedural, none, or a custom PNG/WebP path.")
+    render.add_argument("--no-hatching", action="store_true", help="Disable hatch fills for thick solid areas.")
+    render.add_argument(
+        "--draw-mode",
+        choices=["structure-then-ink", "direct-ink"],
+        default="direct-ink",
+        help="Drawing mode: structure-then-ink (skeleton then fill) or direct-ink (pure brush mass, no skeleton).",
+    )
+    render.add_argument("--ink-darkness", type=int, default=90, help="Ink darkness 0–100 (0=white, 100=pure black, default 90).")
+    render.add_argument("--ink-brush", type=float, default=5.5, help="Max freehand stroke width in pixels (default 5.5).")
     render.set_defaults(command="render-image")
 
     compose = sub.add_parser("compose", help="Concatenate rendered MP4 scene clips.")
@@ -269,7 +336,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--voice", default="zh-CN-XiaoxiaoNeural")
     run.add_argument("--resume", action="store_true")
     run.add_argument("--mock", action="store_true")
-    run.add_argument("--hand", default="asian", help="Hand cursor: asian (default), black, children, white, procedural, none, or a custom PNG/WebP path.")
+    run.add_argument("--hand", default=DEFAULT_DRAWING_TOOL, help="Drawing cursor (default: zhubajie-run), or another built-in/custom cursor.")
     run.add_argument("--hand-scale", type=float, default=1.0)
     run.set_defaults(command="run")
     return parser

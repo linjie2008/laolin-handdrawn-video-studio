@@ -15,6 +15,7 @@ from .models import Project, Scene
 from .providers import get_providers
 from .scene_split import split_script
 from .tts import synthesize_scene_audio
+from .ui_state import DEFAULT_DRAWING_TOOL
 from .whiteboard import render_scene
 
 
@@ -28,7 +29,7 @@ def run_pipeline(
     tail_color_seconds: float = 2.0,
     resume: bool = False,
     mock: bool | None = None,
-    hand_style: str = "asian",
+    hand_style: str = DEFAULT_DRAWING_TOOL,
     hand_scale: float = 1.0,
 ) -> Project:
     """Run script -> scenes -> images -> narration -> rendered MP4."""

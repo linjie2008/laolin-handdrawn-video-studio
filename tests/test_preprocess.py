@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from whiteboard_skill.preprocess import Stroke, binarize, merge_nearby_strokes, order_strokes, smooth_strokes, svg_to_strokes, to_strokes, trace_8connected, zhang_suen_skeleton
+from whiteboard_skill.preprocess import Stroke, binarize, merge_nearby_strokes, order_strokes, smooth_strokes, stitch_touching_strokes, svg_to_strokes, to_strokes, trace_8connected, zhang_suen_skeleton
 
 
 def test_binarize_marks_dark_pixels():
@@ -49,6 +49,18 @@ def test_raster_to_strokes_ignores_placed_image_border(tmp_path):
     assert max(y for _, y in points) < 148
 
 
+def test_raster_to_strokes_preserves_the_center_of_broad_ink(tmp_path):
+    image = Image.new("RGB", (100, 100), "white")
+    ImageDraw.Draw(image).rectangle((15, 40, 85, 60), fill="black")
+    path = tmp_path / "broad-ink.png"
+    image.save(path)
+
+    strokes = to_strokes(path, (100, 100), stroke_detail="max")
+    points = [point for stroke in strokes for point in stroke.points]
+
+    assert min((x - 50) ** 2 + (y - 50) ** 2 for x, y in points) <= 4
+
+
 def test_svg_to_strokes_ignores_viewbox_border(tmp_path):
     svg = tmp_path / "framed.svg"
     svg.write_text(
@@ -90,6 +102,30 @@ def test_merge_nearby_strokes_joins_touching_corners():
     assert len(merged) == 1
     assert merged[0].points[0] == (0, 0)
     assert merged[0].points[-1] == (10, 12)
+
+
+def test_stitch_touching_strokes_builds_one_continuous_human_path():
+    strokes = [
+        Stroke(points=[(0, 0), (10, 0)], source="raster-geometry"),
+        Stroke(points=[(10, 0), (20, 1)], source="raster-geometry"),
+        Stroke(points=[(20, 1), (30, 5)], source="raster-geometry"),
+        Stroke(points=[(80, 80), (90, 80)], source="raster-geometry"),
+    ]
+
+    stitched = stitch_touching_strokes(strokes)
+
+    assert len(stitched) == 2
+    assert max(len(stroke.points) for stroke in stitched) == 4
+
+
+def test_order_strokes_finishes_nearby_form_before_scanning_across_page():
+    first = Stroke(points=[(5, 10), (20, 10)])
+    nearby_lower = Stroke(points=[(21, 11), (30, 30)])
+    distant_same_row = Stroke(points=[(180, 12), (195, 12)])
+
+    ordered = order_strokes([distant_same_row, nearby_lower, first], (200, 200), draw_mode="direct-ink")
+
+    assert ordered == [first, nearby_lower, distant_same_row]
 
 
 def test_smooth_strokes_resamples_pixel_steps():

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 
 from PIL import Image, ImageDraw
@@ -71,6 +72,40 @@ def test_anime2sketch_cleanup_removes_faint_fragments_and_darkens_lines(tmp_path
 def test_xdog_provider_is_not_available():
     with pytest.raises(ValueError):
         get_lineart_provider("xdog")
+
+
+def test_doodle_provider_preserves_dark_bright_and_pastel_color_regions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = Image.new("RGB", (150, 100), "white")
+    draw = ImageDraw.Draw(source)
+    draw.rectangle((10, 12, 45, 48), fill=(235, 35, 45), outline="black", width=2)
+    draw.ellipse((58, 12, 98, 52), fill=(35, 150, 235), outline="black", width=2)
+    draw.rectangle((108, 12, 142, 48), fill=(252, 238, 174), outline=(210, 170, 35), width=2)
+    draw.line((15, 78, 135, 70), fill=(35, 20, 35), width=4)
+    source_path = tmp_path / "doodle.png"
+    lineart_path = tmp_path / "doodle-lineart.png"
+    colors_path = tmp_path / "doodle-colors.png"
+    palette_path = tmp_path / "doodle-palette.json"
+    source.save(source_path)
+    monkeypatch.setenv("DOODLE_COLOR_OUTPUT", str(colors_path))
+    monkeypatch.setenv("DOODLE_PALETTE_OUTPUT", str(palette_path))
+
+    get_lineart_provider("doodle-color").extract(source_path, lineart_path)
+
+    lineart = Image.open(lineart_path).convert("L")
+    colors = Image.open(colors_path).convert("RGB")
+    palette = json.loads(palette_path.read_text(encoding="utf-8"))
+    assert lineart.getpixel((10, 30)) < 180
+    assert lineart.getpixel((28, 30)) > 220
+    assert lineart.getpixel((78, 30)) > 220
+    assert lineart.getpixel((125, 30)) > 220
+    assert colors.getpixel((28, 30))[0] > 200
+    assert colors.getpixel((78, 30))[2] > 180
+    assert colors.getpixel((125, 30))[0] > 240
+    assert colors.getpixel((125, 30))[2] < 210
+    assert len(palette) >= 3
 
 
 def test_normalize_lineart_clears_canvas_edges_without_alignment(tmp_path: Path):

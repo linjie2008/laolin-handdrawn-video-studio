@@ -35,12 +35,19 @@ def test_resolve_raster_resolution_preserves_aspect_for_single_dimension(tmp_pat
     assert used_source_size is False
 
 
-def test_render_commands_default_to_asian_hand_and_adaptive_line_width():
+def test_render_commands_default_to_pigsy_and_adaptive_line_width():
     parser = _build_parser()
 
     photo = parser.parse_args(["render-photo", "input.png", "-o", "out.mp4"])
     render = parser.parse_args(["render-image", "lineart.png", "-o", "out.mp4"])
     run = parser.parse_args(["run", "script.md", "-o", "out.mp4"])
 
-    assert photo.hand == render.hand == run.hand == "asian"
+    assert photo.hand == render.hand == run.hand == "zhubajie-run"
     assert photo.line_thickness == render.line_thickness == 0
+    assert photo.theme is None
+    assert render.theme_font == "mao"
+    assert render.theme_font_size == 72
+    assert photo.theme_position == render.theme_position == "right"
+    assert photo.seal_style == render.seal_style == "white-text"
+    assert photo.seal_text == render.seal_text == "老林涂鸦"
+    assert photo.seal_position == render.seal_position == "left-center"
