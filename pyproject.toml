@@ -1,10 +1,11 @@
 [project]
 name = "whiteboard-video-engine"
 version = "0.1.0"
-description = "Local-first hand-drawn whiteboard video engine with an optional Codex skill adapter"
+description = "Visual whiteboard video generator for ink-wash, doodle, line-art, coloring, character drawing, and dimensional seals"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "gradio>=6.20",
   "numpy>=1.26",
   "Pillow>=10.3",
   "pydantic>=2.7",
@@ -31,10 +32,9 @@ dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]
 whiteboard = "whiteboard_skill.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/gnipbao/whiteboard-video-engine"
-Repository = "https://github.com/gnipbao/whiteboard-video-engine"
-Issues = "https://github.com/gnipbao/whiteboard-video-engine/issues"
-CodexSkill = "https://github.com/gnipbao/codex-whiteboard-video-skill"
+Homepage = "https://github.com/linjie2008/whiteboard-video-engine"
+Repository = "https://github.com/linjie2008/whiteboard-video-engine"
+Issues = "https://github.com/linjie2008/whiteboard-video-engine/issues"
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]
