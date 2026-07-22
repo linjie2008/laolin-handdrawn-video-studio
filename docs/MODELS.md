@@ -64,7 +64,7 @@ tools/lineart/
 If you installed the engine with `pip` and do not have a repository checkout, copy the wrapper scripts from:
 
 ```text
-https://github.com/gnipbao/whiteboard-video-engine/tree/main/tools/lineart
+https://github.com/linjie2008/laolin-handdrawn-video-studio/tree/main/tools/lineart
 ```
 
 ## Informative Drawings

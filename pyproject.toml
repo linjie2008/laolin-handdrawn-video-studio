@@ -1,7 +1,7 @@
 [project]
-name = "whiteboard-video-engine"
+name = "laolin-handdrawn-video-studio"
 version = "0.1.0"
-description = "Visual whiteboard video generator for ink-wash, doodle, line-art, coloring, character drawing, and dimensional seals"
+description = "Laolin visual studio for ink-wash, doodle, line-art, character drawing, natural coloring, and dimensional seals"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -29,12 +29,13 @@ full = [
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]
 
 [project.scripts]
+laolin-video = "whiteboard_skill.cli:main"
 whiteboard = "whiteboard_skill.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/linjie2008/whiteboard-video-engine"
-Repository = "https://github.com/linjie2008/whiteboard-video-engine"
-Issues = "https://github.com/linjie2008/whiteboard-video-engine/issues"
+Homepage = "https://github.com/linjie2008/laolin-handdrawn-video-studio"
+Repository = "https://github.com/linjie2008/laolin-handdrawn-video-studio"
+Issues = "https://github.com/linjie2008/laolin-handdrawn-video-studio/issues"
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]

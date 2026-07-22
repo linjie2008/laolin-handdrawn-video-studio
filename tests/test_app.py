@@ -55,3 +55,10 @@ def test_theme_input_accepts_manual_line_breaks():
     assert 'placeholder="例如：嫦娥（按 Enter 换行）"' in source
     assert "max_lines=4" in source
     assert 'cleaned_theme = "\\n".join(' in source
+
+
+def test_frontend_uses_laolin_product_branding():
+    source = Path("app.py").read_text(encoding="utf-8")
+
+    assert 'title="老林手绘视频工坊"' in source
+    assert "LAOLIN HAND-DRAWN VIDEO STUDIO" in source

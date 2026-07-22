@@ -689,11 +689,11 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, #root::-webkit-scrollbar { dis
 @media (max-width: 900px) { .preview-panel { min-height: auto; } }
 """
 
-with gr.Blocks(title="白板手绘视频生成器") as demo:
+with gr.Blocks(title="老林手绘视频工坊") as demo:
     with gr.Column(elem_classes="app-shell"):
         gr.HTML(
-            "<div class='app-header'><div class='brand-cn'>白板手绘视频生成器</div>"
-            "<div class='brand-en'>WHITEBOARD VIDEO ENGINE</div></div>"
+            "<div class='app-header'><div class='brand-cn'>老林手绘视频工坊</div>"
+            "<div class='brand-en'>LAOLIN HAND-DRAWN VIDEO STUDIO</div></div>"
         )
 
         with gr.Row(equal_height=False, elem_classes="workspace"):

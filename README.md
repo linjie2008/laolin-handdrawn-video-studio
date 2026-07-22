@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="docs/assets/hero.png" alt="白板手绘视频生成器" width="960">
-</p>
+# 老林手绘视频工坊
 
-# 白板手绘视频生成器
+<p><strong>LAOLIN HAND-DRAWN VIDEO STUDIO</strong></p>
 
 [English](README.en.md)
 
@@ -25,6 +23,37 @@
       </a><br>
       <a href="examples/cases/ink-wash-ancient-town/output.mp4">查看 19 秒 MP4</a>
       · <a href="examples/cases/ink-wash-ancient-town/lineart.png">查看提取线稿</a>
+    </td>
+  </tr>
+</table>
+
+## 涂鸦与线稿演示
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>彩色涂鸦原图</strong><br>
+      <img src="examples/cases/doodle-journey-west/input.png" alt="西游彩色涂鸦原图" width="360">
+    </td>
+    <td width="50%">
+      <strong>涂鸦识别与上色视频</strong><br>
+      <a href="examples/cases/doodle-journey-west/output.mp4">
+        <img src="examples/cases/doodle-journey-west/output-preview.gif" alt="西游涂鸦绘制预览" width="360">
+      </a><br>
+      <a href="examples/cases/doodle-journey-west/output.mp4">查看完整 MP4</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>已有线稿</strong><br>
+      <img src="examples/cases/existing-lineart-portrait/input.png" alt="人物线稿原图" width="360">
+    </td>
+    <td width="50%">
+      <strong>逐笔线稿视频</strong><br>
+      <a href="examples/cases/existing-lineart-portrait/output.mp4">
+        <img src="examples/cases/existing-lineart-portrait/output-preview.gif" alt="人物线稿逐笔绘制预览" width="360">
+      </a><br>
+      <a href="examples/cases/existing-lineart-portrait/output.mp4">查看完整 MP4</a>
     </td>
   </tr>
 </table>
@@ -100,8 +129,8 @@
 - 推荐使用支持 PyTorch 的本地环境运行神经网络线稿模型
 
 ```bash
-git clone https://github.com/linjie2008/whiteboard-video-engine.git
-cd whiteboard-video-engine
+git clone https://github.com/linjie2008/laolin-handdrawn-video-studio.git
+cd laolin-handdrawn-video-studio
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -142,11 +171,13 @@ http://127.0.0.1:7860
 前端是推荐入口，同时保留 CLI 供批处理和自动化调用：
 
 ```bash
-whiteboard doctor
-whiteboard extract-lineart input.png -o lineart.png --provider ink-wash
-whiteboard render-photo input.png -o output.mp4 --lineart-provider ink-wash
-whiteboard render-image lineart.png -o output.mp4 --source-image input.png
+laolin-video doctor
+laolin-video extract-lineart input.png -o lineart.png --provider ink-wash
+laolin-video render-photo input.png -o output.mp4 --lineart-provider ink-wash
+laolin-video render-image lineart.png -o output.mp4 --source-image input.png
 ```
+
+兼容命令 `whiteboard` 仍然保留。
 
 ## 项目结构
 

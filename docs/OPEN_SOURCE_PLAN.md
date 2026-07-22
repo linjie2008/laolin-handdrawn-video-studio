@@ -1,123 +1,37 @@
-# Open-Source Plan
+# 老林手绘视频工坊发布说明
 
-## Repository Split
+## 项目定位
 
-Use two public repositories:
+老林手绘视频工坊是一个本地运行的可视化手绘视频创作工具，重点覆盖水墨、涂鸦、普通图片和已有线稿四类工作流。
+
+公开仓库：
 
 ```text
-whiteboard-video-engine
-  Python package, CLI, renderer, model wrapper scripts, tests, docs
-
-codex-whiteboard-video-skill
-  Codex SKILL.md, references, examples, tiny wrapper script
+https://github.com/linjie2008/laolin-handdrawn-video-studio
 ```
 
-The skill repository depends on this engine. It should not duplicate engine
-source code.
+## 公开内容
 
-## Why Split Now
+- Gradio 前端与状态管理。
+- 线稿追踪、笔画排序、自然上色和视频渲染核心。
+- 水墨与涂鸦本地识别适配器。
+- 获得分发许可的角色、工具、印章和字体素材。
+- 可公开展示的输入图片、GIF 预览和 MP4 示例。
+- 自动化测试与模型安装文档。
 
-This project has two audiences:
+## 不公开内容
 
-- normal Python/CLI users
-- Codex users who install skills
+- 用户上传和生成的临时文件。
+- 本地虚拟环境、缓存和日志。
+- 第三方模型仓库及模型权重。
+- 未确认授权的字体、图片和视频。
 
-Keeping the engine separate makes installation clearer:
+## 发布检查
 
 ```bash
-python3 -m pip install "git+https://github.com/gnipbao/whiteboard-video-engine.git"
-git clone https://github.com/gnipbao/codex-whiteboard-video-skill.git ~/.codex/skills/whiteboard-video
+python -m pytest -q
+git status --short
+git push
 ```
 
-The skill can evolve as prompt/instruction packaging, while the engine can
-evolve as a Python package.
-
-## Public Engine Surface
-
-Treat these as stable or semi-stable:
-
-- package import: `whiteboard_skill`
-- CLI entrypoint: `whiteboard`
-- commands:
-  - `extract-lineart`
-  - `render-photo`
-  - `render-image`
-  - `analyze-image`
-  - `compose`
-  - `doctor`
-- provider env vars:
-  - `WHITEBOARD_INFORMATIVE_DRAWINGS_CMD`
-  - `WHITEBOARD_ANIME2SKETCH_CMD`
-  - `WHITEBOARD_LINEART_PYTHON`
-
-Treat these as internal:
-
-- stroke merge heuristics
-- dataclass fields
-- temporary frame layout
-- line-art provider readiness helpers
-
-## Engine Repository Should Contain
-
-- `src/`
-- `tests/`
-- `examples/`
-- `assets/hands/`
-- `tools/lineart/`
-- `docs/`
-- `README.md`
-- `pyproject.toml`
-- `Makefile`
-- `.env.example`
-- `.gitignore`
-
-## Engine Repository Must Not Contain
-
-- third-party model repositories
-- model weights
-- user uploads
-- generated videos, except small curated demos under `examples/cases/`
-- local virtualenvs
-- Codex skill vendor copy of engine source
-
-## Skill Repository Should Contain
-
-- `SKILL.md`
-- `README.md`
-- `scripts/whiteboard_cli.py`
-- `references/`
-- `examples/`
-- optional `agents/`
-
-## Skill Repository Must Not Contain
-
-- `src/whiteboard_skill`
-- model repos
-- model weights
-- generated videos
-- local virtualenvs
-
-## Release Checklist
-
-Before publishing:
-
-1. Add a license to both repositories.
-2. Confirm repository URLs point to `https://github.com/gnipbao/`.
-3. Confirm `.gitignore` excludes weights, model repos, outputs, and virtualenvs.
-4. Run engine tests without model weights.
-5. Run one local model smoke test manually and document the result.
-6. Install the skill from the skill repository and verify it can call the
-   installed engine.
-7. Confirm demo assets under `examples/cases/` are owned by the project or have
-   explicit open-source distribution permission.
-
-## Future Packaging
-
-The engine can later be published to PyPI:
-
-```bash
-pip install whiteboard-video-engine
-```
-
-When that happens, update the skill install docs to prefer the PyPI package and
-keep the GitHub install as a development option.
+发布前确认 README 中的水墨、涂鸦和已有线稿示例均可访问，并确认 MP4 文件大小符合 GitHub 单文件限制。

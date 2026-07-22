@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="docs/assets/hero.png" alt="Whiteboard Video Generator" width="960">
-</p>
+# Laolin Hand-Drawn Video Studio
 
-# Whiteboard Video Generator
+<p><strong>老林手绘视频工坊</strong></p>
 
 [中文](README.md)
 
@@ -25,6 +23,37 @@ The Gradio interface is the primary entry point. Recognition and rendering can r
       </a><br>
       <a href="examples/cases/ink-wash-ancient-town/output.mp4">Open the 19-second MP4</a>
       · <a href="examples/cases/ink-wash-ancient-town/lineart.png">View extracted line art</a>
+    </td>
+  </tr>
+</table>
+
+## Doodle And Existing Line-Art Demos
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Full-color Doodle Input</strong><br>
+      <img src="examples/cases/doodle-journey-west/input.png" alt="Journey to the West doodle input" width="360">
+    </td>
+    <td width="50%">
+      <strong>Doodle Drawing And Coloring</strong><br>
+      <a href="examples/cases/doodle-journey-west/output.mp4">
+        <img src="examples/cases/doodle-journey-west/output-preview.gif" alt="Doodle drawing preview" width="360">
+      </a><br>
+      <a href="examples/cases/doodle-journey-west/output.mp4">Open Full MP4</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Existing Line Art</strong><br>
+      <img src="examples/cases/existing-lineart-portrait/input.png" alt="Portrait line-art input" width="360">
+    </td>
+    <td width="50%">
+      <strong>Stroke-by-stroke Output</strong><br>
+      <a href="examples/cases/existing-lineart-portrait/output.mp4">
+        <img src="examples/cases/existing-lineart-portrait/output-preview.gif" alt="Line-art drawing preview" width="360">
+      </a><br>
+      <a href="examples/cases/existing-lineart-portrait/output.mp4">Open Full MP4</a>
     </td>
   </tr>
 </table>
@@ -65,8 +94,8 @@ Requirements:
 - A PyTorch-capable local environment for neural line-art providers
 
 ```bash
-git clone https://github.com/linjie2008/whiteboard-video-engine.git
-cd whiteboard-video-engine
+git clone https://github.com/linjie2008/laolin-handdrawn-video-studio.git
+cd laolin-handdrawn-video-studio
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -95,11 +124,13 @@ Third-party model repositories and weights are intentionally excluded from Git. 
 The UI is recommended, while the CLI remains available for batch rendering:
 
 ```bash
-whiteboard doctor
-whiteboard extract-lineart input.png -o lineart.png --provider ink-wash
-whiteboard render-photo input.png -o output.mp4 --lineart-provider ink-wash
-whiteboard render-image lineart.png -o output.mp4 --source-image input.png
+laolin-video doctor
+laolin-video extract-lineart input.png -o lineart.png --provider ink-wash
+laolin-video render-photo input.png -o output.mp4 --lineart-provider ink-wash
+laolin-video render-image lineart.png -o output.mp4 --source-image input.png
 ```
+
+The legacy `whiteboard` command remains available for compatibility.
 
 ## Repository Layout
 
